@@ -1,5 +1,5 @@
 """
-Backend FastAPI server.
+Backend FastAPI server with multi-user support.
 """
 import os
 import asyncio
@@ -8,7 +8,7 @@ import json
 from typing import List, Optional, Dict, Any, Set, Tuple, Union, AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,10 +24,12 @@ from utils.document_processing import format_docs
 from utils.export_docx import get_backend_docx_exporter
 from utils.blob_utils import BlobStorageManager
 from utils.download_manager_image import (
-    get_image_download_manager, 
+    get_user_image_download_manager, 
     cleanup_previous_images, 
-    process_chunks_with_images
+    process_chunks_with_images,
+    cleanup_user_image_manager
 )
+from utils.user_manager import get_user_manager
 from qdrant_client import QdrantClient
 
 # Backend-compatible response generation
@@ -48,8 +50,8 @@ qdrant_client = None
 embedding_models = None
 llm = None
 blob_manager = None
-image_manager = None
 backend_docx_exporter = None
+user_manager = None
 
 def convert_numpy_types(obj):
     """Convert numpy types to native Python types recursively with better error handling."""
@@ -95,9 +97,32 @@ def make_json_safe(obj):
         # If that fails, convert types
         return convert_numpy_types(obj)
 
+def get_user_session_id(request: Request, x_user_session: Optional[str] = Header(None)) -> str:
+    """Extract user session ID from request headers or create a new one"""
+    global user_manager
+    
+    # Try to get from header first
+    if x_user_session:
+        user_data = user_manager.get_user_session(x_user_session)
+        if user_data:
+            user_manager.update_user_activity(x_user_session)
+            return x_user_session
+    
+    # Try to get from query parameters
+    session_id = request.query_params.get("user_session_id")
+    if session_id:
+        user_data = user_manager.get_user_session(session_id)
+        if user_data:
+            user_manager.update_user_activity(session_id)
+            return session_id
+    
+    # Create new session
+    new_session_id = user_manager.create_user_session()
+    return new_session_id
+
 def initialize_models():
     """Initialize ML models and connect to external services"""
-    global embedding_models, llm, qdrant_client, blob_manager, image_manager, backend_docx_exporter
+    global embedding_models, llm, qdrant_client, blob_manager, backend_docx_exporter, user_manager
     try:
         print("Connecting to external services and initializing models...")
         
@@ -120,13 +145,13 @@ def initialize_models():
         # Initialize blob storage manager
         blob_manager = BlobStorageManager()
         
-        # Initialize image download manager
-        image_manager = get_image_download_manager()
-        
         # Initialize backend DOCX exporter (no Chainlit dependency)
         backend_docx_exporter = get_backend_docx_exporter("exports")
         
-        # Cleanup previous images on startup
+        # Initialize user manager
+        user_manager = get_user_manager()
+        
+        # Cleanup previous images on startup (for all users)
         try:
             cleanup_previous_images()
             print("✓ Previous images cleaned up")
@@ -152,8 +177,8 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="Simplified RAG Backend Server", 
-    version="2.1.0",
+    title="Multi-User RAG Backend Server", 
+    version="2.2.0",
     lifespan=lifespan
 )
 
@@ -166,13 +191,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files for images
-app.mount("/images", StaticFiles(directory="public"), name="images")
+# Mount static files for images with user support
+from fastapi.staticfiles import StaticFiles
+import os
 
-# Pydantic models for API (keeping your existing models)
+class UserStaticFiles(StaticFiles):
+    """Custom static files handler for user-specific images"""
+    
+    def __init__(self, directory: str = "public", **kwargs):
+        super().__init__(directory=directory, **kwargs)
+    
+    async def get_response(self, path: str, scope):
+        """Override to handle user-specific paths"""
+        # Check if path starts with user_
+        if path.startswith("user_"):
+            # Path is already user-specific, use as is
+            full_path = os.path.join(self.directory, path)
+        else:
+            # Legacy path, try to find in default user folder
+            full_path = os.path.join(self.directory, "user_default", path)
+            if not os.path.exists(full_path):
+                # Fallback to direct path
+                full_path = os.path.join(self.directory, path)
+        
+        # Create new scope with updated path
+        new_scope = scope.copy()
+        new_scope["path"] = "/" + os.path.relpath(full_path, self.directory).replace("\\", "/")
+        
+        return await super().get_response(os.path.relpath(full_path, self.directory), new_scope)
+
+app.mount("/images", UserStaticFiles(directory="public"), name="images")
+
+# Pydantic models for API (keeping your existing models with user support)
 class SearchRequest(BaseModel):
     query: str
-    collection_name: str
+    collection_name: str = None  # Will be auto-determined for DCE
     threshold: float = 0.1
     max_results: int = 15
     use_reranker: bool = True
@@ -197,10 +250,30 @@ class SearchResponse(BaseModel):
 class DualSearchRequest(BaseModel):
     query: str
     technical_collection: str = None
-    dce_collection: str = None
+    dce_collection: str = None  # Will be user-specific
     threshold: float = 0.1
     max_results: int = 15
     use_reranker: bool = True
+
+class UserSessionRequest(BaseModel):
+    user_identifier: Optional[str] = None
+
+class UserSessionResponse(BaseModel):
+    session_id: str
+    user_identifier: Optional[str]
+    dce_collection: str
+    created_at: str
+    message: str
+
+class IngestionRequest(BaseModel):
+    data_type: str
+    region_name: Optional[str] = None
+    collection_name: Optional[str] = None
+    recreate_collection: bool = False
+    remove_duplicates: bool = False
+    file_patterns: Optional[List[str]] = None
+    archive_processed_files: Optional[bool] = None
+    user_session_id: Optional[str] = None  # Add user session support
 
 class DualSearchResponse(BaseModel):
     technical_results: SearchResponse
@@ -333,20 +406,25 @@ class BlobExportRequest(BaseModel):
 async def root():
     """Root endpoint"""
     return {
-        "message": "RAG Backend Server with Image Serving",
-        "version": "2.1.0",
+        "message": "Multi-User RAG Backend Server with Image Serving",
+        "version": "2.2.0",
         "qdrant_url": Config.QDRANT_URL,
         "features": [
+            "Multi-user support with session management",
+            "User-specific DCE collections",
+            "User-specific image folders",
             "Dual collection search",
             "Image processing and serving",
             "Blob storage integration", 
             "DOCX export",
             "LLM response generation",
-            "HTTP image serving at /images/",
-            "Ingestion without progress tracking"
+            "User session management",
+            "Automatic session cleanup"
         ],
         "endpoints": {
             "health": "/health",
+            "user_session": "/api/user/session",
+            "user_info": "/api/user/info",
             "dual_search": "/api/dual-search",
             "search": "/api/search",
             "chat": "/api/chat",
@@ -354,8 +432,69 @@ async def root():
             "collections": "/api/collections",
             "export": "/api/export",
             "blob": "/api/blob",
-            "images": "/images/{filename}"
+            "images": "/images/{user_folder}/{filename}"
         }
+    }
+
+@app.post("/api/user/session", response_model=UserSessionResponse)
+async def create_user_session(request: UserSessionRequest):
+    """Create a new user session"""
+    session_id = user_manager.create_user_session(request.user_identifier)
+    user_data = user_manager.get_user_session(session_id)
+    
+    return UserSessionResponse(
+        session_id=session_id,
+        user_identifier=request.user_identifier,
+        dce_collection=user_data['dce_collection'],
+        created_at=user_data['created_at'].isoformat(),
+        message=f"User session created successfully"
+    )
+
+@app.get("/api/user/info")
+async def get_user_info(request: Request, x_user_session: Optional[str] = Header(None)):
+    """Get current user session information"""
+    session_id = get_user_session_id(request, x_user_session)
+    user_data = user_manager.get_user_session(session_id)
+    
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User session not found")
+    
+    return {
+        "session_id": session_id,
+        "user_identifier": user_data.get('user_identifier'),
+        "dce_collection": user_data['dce_collection'],
+        "created_at": user_data['created_at'].isoformat(),
+        "last_activity": user_data['last_activity'].isoformat(),
+        "processed_files_count": len(user_data.get('processed_files', [])),
+        "active": user_data.get('active', True)
+    }
+
+@app.get("/api/user/stats")
+async def get_user_stats():
+    """Get user management statistics"""
+    stats = user_manager.get_stats()
+    active_users = user_manager.list_active_users()
+    
+    return {
+        "stats": stats,
+        "active_users": active_users[:10],  # Limit to first 10 for privacy
+        "total_active_users": len(active_users)
+    }
+
+@app.delete("/api/user/session")
+async def cleanup_user_session(request: Request, x_user_session: Optional[str] = Header(None)):
+    """Manually cleanup a user session"""
+    session_id = get_user_session_id(request, x_user_session)
+    
+    # Cleanup image manager for this user
+    cleanup_user_image_manager(session_id)
+    
+    # Cleanup user session
+    user_manager.cleanup_user_session(session_id)
+    
+    return {
+        "success": True,
+        "message": f"User session {session_id} cleaned up successfully"
     }
 
 @app.get("/health")
@@ -422,50 +561,73 @@ async def health_check():
     }
 
 @app.post("/api/ingestion")
-async def start_ingestion(request: IngestionRequest, background_tasks: BackgroundTasks):
+async def start_ingestion(request: IngestionRequest, background_tasks: BackgroundTasks, 
+                         http_request: Request, x_user_session: Optional[str] = Header(None)):
     """
-    SIMPLIFIED: Basic ingestion endpoint using main_ingestion.py without progress tracking
+    Updated ingestion endpoint with user support for DCE collections
     """
     try:
+        # Get user session for DCE data type
+        session_id = None
+        if request.data_type == 'dce':
+            session_id = get_user_session_id(http_request, x_user_session)
+            # Determine user-specific collection name
+            final_collection_name = Config.get_user_dce_collection_name(session_id)
+        else:
+            # For region/technical data, use provided or default collection name
+            final_collection_name = request.collection_name or Config.get_collection_name_for_data_type(
+                request.data_type, request.region_name
+            )
+        
         # Run ingestion in background using main_ingestion.py
         background_tasks.add_task(
             run_ingestion_async,
             data_type=request.data_type,
             region_name=request.region_name,
-            collection_name=request.collection_name,
+            collection_name=final_collection_name,
             recreate_collection=request.recreate_collection,
             remove_duplicates=request.remove_duplicates,
             file_patterns=request.file_patterns,
-            archive_processed_files=request.archive_processed_files
+            archive_processed_files=request.archive_processed_files,
+            user_session_id=session_id  # Pass user session for tracking
         )
+        
+        # Update user activity if DCE ingestion
+        if session_id:
+            user_manager.update_user_activity(session_id)
         
         return {
             "success": True,
             "message": "Ingestion démarrée en arrière-plan",
             "data_type": request.data_type,
             "region_name": request.region_name,
-            "collection_name": request.collection_name
+            "collection_name": final_collection_name,
+            "user_session_id": session_id,
+            "user_specific": request.data_type == 'dce'
         }
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/dual-search", response_model=DualSearchResponse)
-async def dual_search_documents(request: DualSearchRequest):
-    """Search documents in both technical and DCE collections with image processing"""
+async def dual_search_documents(request: DualSearchRequest, http_request: Request, x_user_session: Optional[str] = Header(None)):
+    """Search documents in both technical and user-specific DCE collections with image processing"""
     if not qdrant_client or not embedding_models:
         raise HTTPException(status_code=503, detail="Services not ready")
     
+    # Get user session
+    session_id = get_user_session_id(http_request, x_user_session)
+    
     try:
-        # Use config values if not provided
+        # Use config values if not provided, with user-specific DCE collection
         technical_collection = request.technical_collection or Config.COLLECTION_NAME
-        dce_collection = request.dce_collection or Config.DCE_COLLECTION
+        dce_collection = request.dce_collection or Config.get_user_dce_collection_name(session_id)
         
         # Initialize results
         technical_results = None
         dce_results = None
         
-        # Search in technical collection
+        # Search in technical collection (shared)
         try:
             tech_search_results = await hybrid_search_with_threshold(
                 query=request.query,
@@ -508,7 +670,7 @@ async def dual_search_documents(request: DualSearchRequest):
                 collection_name=technical_collection, reranked=False
             )
         
-        # Search in DCE collection
+        # Search in user-specific DCE collection
         try:
             dce_search_results = await hybrid_search_with_threshold(
                 query=request.query,
@@ -551,7 +713,7 @@ async def dual_search_documents(request: DualSearchRequest):
                 collection_name=dce_collection, reranked=False
             )
         
-        # Process images in chunks if we have results
+        # Process images in chunks if we have results (user-specific)
         all_docs_for_processing = []
         if technical_results and technical_results.documents:
             # Convert back to Document objects for image processing
@@ -570,10 +732,10 @@ async def dual_search_documents(request: DualSearchRequest):
             ]
             all_docs_for_processing.extend(dce_docs_for_processing)
         
-        # Process images if we have documents
-        if all_docs_for_processing and image_manager:
+        # Process images with user-specific manager
+        if all_docs_for_processing:
             try:
-                processed_chunks = process_chunks_with_images(all_docs_for_processing)
+                processed_chunks = process_chunks_with_images(all_docs_for_processing, session_id)
                 
                 # Update the results with processed chunks
                 num_technical = len(technical_results.documents) if technical_results else 0
@@ -599,6 +761,9 @@ async def dual_search_documents(request: DualSearchRequest):
         
         total_documents = (technical_results.total_results if technical_results else 0) + \
                          (dce_results.total_results if dce_results else 0)
+        
+        # Update user activity
+        user_manager.update_user_activity(session_id)
         
         return DualSearchResponse(
             technical_results=technical_results or SearchResponse(

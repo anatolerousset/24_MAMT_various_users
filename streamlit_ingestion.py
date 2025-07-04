@@ -1,3 +1,4 @@
+# streamlit_ingestion.py (Complete version with user management)
 import streamlit as st
 import tempfile
 import shutil
@@ -22,14 +23,93 @@ _log = logging.getLogger(__name__)
 # Backend URL from environment
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8001")
 
-# Ingestion function
-async def start_basic_ingestion(ingestion_params: dict):
-    """Start basic ingestion without progress tracking"""
+# Initialize user session management in Streamlit
+def initialize_user_session():
+    """Initialize or get user session for Streamlit"""
+    
+    # Check if we already have a session
+    if 'user_session_id' in st.session_state and st.session_state.user_session_id:
+        return st.session_state.user_session_id
+    
+    # Create new session
     try:
+        response = asyncio.run(create_user_session_async())
+        if response and response.get("success"):
+            session_id = response["data"]["session_id"]
+            st.session_state.user_session_id = session_id
+            st.session_state.user_info = response["data"]
+            return session_id
+        else:
+            st.error("❌ Impossible de créer une session utilisateur")
+            return None
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la création de session: {e}")
+        return None
+
+async def create_user_session_async():
+    """Create user session asynchronously"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{BACKEND_URL}/api/user/session",
+                json={"user_identifier": None},  # Could be customized
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            else:
+                return {"success": False, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+async def get_user_info_async(user_session_id: str):
+    """Get user info asynchronously"""
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"X-User-Session": user_session_id}
+            response = await client.get(
+                f"{BACKEND_URL}/api/user/info",
+                headers=headers,
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            else:
+                return {"success": False, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+async def cleanup_user_session_async(user_session_id: str):
+    """Cleanup user session asynchronously"""
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"X-User-Session": user_session_id}
+            response = await client.delete(
+                f"{BACKEND_URL}/api/user/session",
+                headers=headers,
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            else:
+                return {"success": False, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# Ingestion function with user support
+async def start_basic_ingestion_user(ingestion_params: dict, user_session_id: str):
+    """Start basic ingestion without progress tracking with user session support"""
+    try:
+        headers = {"X-User-Session": user_session_id} if user_session_id else {}
+        
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{BACKEND_URL}/api/ingestion",
                 json=ingestion_params,
+                headers=headers,
                 timeout=300.0
             )
             
@@ -40,9 +120,52 @@ async def start_basic_ingestion(ingestion_params: dict):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def display_user_info():
+    """Display user session information in sidebar"""
+    user_session_id = st.session_state.get('user_session_id')
+    
+    if user_session_id:
+        with st.sidebar:
+            st.markdown("### 👤 Session Utilisateur")
+            
+            # Try to get fresh user info
+            try:
+                user_info_response = asyncio.run(get_user_info_async(user_session_id))
+                if user_info_response.get("success"):
+                    user_info = user_info_response["data"]
+                    
+                    st.info(f"**ID de session:** `{user_session_id[:12]}...`")
+                    st.info(f"**Collection DCE:** `{user_info.get('dce_collection', 'N/A')}`")
+                    
+                    if user_info.get('processed_files_count', 0) > 0:
+                        st.success(f"**Fichiers traités:** {user_info['processed_files_count']}")
+                    
+                    # Session cleanup button
+                    if st.button("🧹 Nettoyer ma session", help="Supprimer les données temporaires"):
+                        cleanup_result = asyncio.run(cleanup_user_session_async(user_session_id))
+                        if cleanup_result.get("success"):
+                            st.success("✅ Session nettoyée")
+                            # Reset session state
+                            for key in ['user_session_id', 'user_info']:
+                                if key in st.session_state:
+                                    del st.session_state[key]
+                            st.rerun()
+                        else:
+                            st.error("❌ Erreur lors du nettoyage")
+                else:
+                    st.warning("⚠️ Session invalide, création d'une nouvelle session...")
+                    # Reset and create new session
+                    for key in ['user_session_id', 'user_info']:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"Erreur session: {e}")
+
 def display_launch_section(uploaded_files, validation_errors, data_type, region_name, 
-                                   recreate_collection, remove_duplicates, archive_processed_files):
-    """Launch section with basic loading"""
+                          recreate_collection, remove_duplicates, archive_processed_files, user_session_id):
+    """Launch section with basic loading and user session support"""
     
     # Initialize session state for ingestion status
     if 'ingestion_in_progress' not in st.session_state:
@@ -52,11 +175,16 @@ def display_launch_section(uploaded_files, validation_errors, data_type, region_
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # Button is disabled if there are validation errors OR if ingestion is in progress
-        is_disabled = bool(validation_errors) or st.session_state.ingestion_in_progress
+        # Button is disabled if there are validation errors OR if ingestion is in progress OR no user session
+        is_disabled = bool(validation_errors) or st.session_state.ingestion_in_progress or not user_session_id
         
         # Change button text based on ingestion status
-        button_text = "🔄 Ingestion en cours..." if st.session_state.ingestion_in_progress else "👷 Démarrer l'Ingestion"
+        if not user_session_id:
+            button_text = "❌ Session utilisateur requise"
+        elif st.session_state.ingestion_in_progress:
+            button_text = "🔄 Ingestion en cours..."
+        else:
+            button_text = "👷 Démarrer l'Ingestion"
         
         launch_button = st.button(
             button_text,
@@ -66,7 +194,7 @@ def display_launch_section(uploaded_files, validation_errors, data_type, region_
         )
     
     # Handle launch button click
-    if launch_button and not st.session_state.ingestion_in_progress:
+    if launch_button and not st.session_state.ingestion_in_progress and user_session_id:
         try:
             # Set ingestion status to in progress
             st.session_state.ingestion_in_progress = True
@@ -82,11 +210,11 @@ def display_launch_section(uploaded_files, validation_errors, data_type, region_
     # If ingestion is in progress, run the actual ingestion process
     if st.session_state.ingestion_in_progress:
         run_ingestion_process(uploaded_files, data_type, region_name, 
-                             recreate_collection, remove_duplicates, archive_processed_files)
+                             recreate_collection, remove_duplicates, archive_processed_files, user_session_id)
 
 def run_ingestion_process(uploaded_files, data_type, region_name, 
-                         recreate_collection, remove_duplicates, archive_processed_files):
-    """Separate function to handle the actual ingestion process"""
+                         recreate_collection, remove_duplicates, archive_processed_files, user_session_id):
+    """Separate function to handle the actual ingestion process with user session support"""
     try:
         blob_manager = BlobStorageManager()
         
@@ -103,7 +231,8 @@ def run_ingestion_process(uploaded_files, data_type, region_name,
             'data_type': data_type,
             'recreate_collection': recreate_collection,
             'remove_duplicates': remove_duplicates,
-            'archive_processed_files': archive_processed_files
+            'archive_processed_files': archive_processed_files,
+            'user_session_id': user_session_id  # Add user session to params
         }
         
         # Determine collection name
@@ -127,7 +256,7 @@ def run_ingestion_process(uploaded_files, data_type, region_name,
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
-                        lambda: asyncio.run(start_basic_ingestion(ingestion_params))
+                        lambda: asyncio.run(start_basic_ingestion_user(ingestion_params, user_session_id))
                     )
                     
                     # Update timer while waiting
@@ -161,6 +290,15 @@ def run_ingestion_process(uploaded_files, data_type, region_name,
         if ingestion_result.get("success"):
             st.success("✅ Ingestion terminée avec succès!")
             
+            # Update user info in session state
+            if 'user_info' in st.session_state:
+                try:
+                    user_info_response = asyncio.run(get_user_info_async(user_session_id))
+                    if user_info_response.get("success"):
+                        st.session_state.user_info = user_info_response["data"]
+                except Exception as e:
+                    _log.warning(f"Could not update user info: {e}")
+            
             # Show restart button
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
@@ -186,12 +324,7 @@ def run_ingestion_process(uploaded_files, data_type, region_name,
         st.session_state.ingestion_in_progress = False
         st.error(f"❌ Erreur lors du démarrage de l'ingestion: {str(e)}")
 
-
-# Helper functions
-import json
-import os
-from typing import List
-
+# Helper functions (unchanged from original)
 def load_regions_from_env() -> List[str]:
     """Load available regions from environment variables"""
     try:
@@ -425,13 +558,19 @@ def display_upload_section(data_type: str):
     return uploaded_files
 
 def main():
-    """Simplified main interface"""
+    """Main interface with user session management"""
+    
+    # Initialize user session first
+    user_session_id = initialize_user_session()
     
     # Add navigation button
     add_navigation_button()
     
     # Main header
     st.markdown('<h1 class="main-header">📁 Interface d\'ingestion des documents</h1>', unsafe_allow_html=True)
+    
+    # Display user info in sidebar
+    display_user_info()
     
     # Configuration from sidebar
     data_type, region_name, recreate_collection, remove_duplicates, archive_processed_files = display_sidebar_config()
@@ -452,15 +591,18 @@ def main():
     if data_type == "region" and not region_name:
         validation_errors.append("Une région doit être sélectionnée pour le type 'region'")
     
+    if not user_session_id:
+        validation_errors.append("Session utilisateur non initialisée")
+    
     # Display validation errors
     display_validation_errors(validation_errors)
     
-    # Launch section - use the correct function name
+    # Launch section - now with user session support
     display_launch_section(
         uploaded_files, validation_errors, data_type, region_name,
-        recreate_collection, remove_duplicates, archive_processed_files
+        recreate_collection, remove_duplicates, archive_processed_files, user_session_id
     )
-    
+
 # Page configuration
 st.set_page_config(
     page_title="Ingestion des documents",
@@ -469,7 +611,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS styles
+# CSS styles (unchanged from original)
 st.markdown("""
 <style>
     :root {

@@ -50,13 +50,9 @@ COPY finetuned_models/ ./finetuned_models/
 COPY backend_server.py ./
 
 # Create directories
-RUN mkdir -p temp public exports
+RUN mkdir -p temp public exports 
 
 # Expose ports
 EXPOSE 8001 6333
 
-# Start script
-COPY start_backend.sh ./
-RUN chmod +x start_backend.sh
-
-CMD ["./start_backend.sh"]
+CMD ["python", "backend_server.py"]

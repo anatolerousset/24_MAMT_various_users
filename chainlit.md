@@ -218,4 +218,4 @@ CHAINLIT_HOST=localhost                  # Chainlit interface host
 - Language model service
 
 ### Support
-For technical issues or questions about document ingestion, use the Streamlit interface accessible via the link provided in the Chainlit application.
+For technical issues or questions about document ingestion, contact Anatole ROUSSET (anatole.rousset@vinci-construction.com)
