@@ -27,11 +27,10 @@ async def main_ingestion_pipeline_with_progress(
     remove_duplicates: bool = False,
     file_patterns: List[str] = None,
     archive_processed_files: bool = None,
-    progress_callback: Callable = None,
-    user_session_id: Optional[str] = None  # NEW: User session support
+    progress_callback: Callable = None
 ):
     """
-    Main ingestion pipeline with file deletion for non-archived files and user support
+    Main ingestion pipeline with file deletion for non-archived files
     
     Args:
         data_type: Type of data ('dce' or 'region')
@@ -42,7 +41,6 @@ async def main_ingestion_pipeline_with_progress(
         file_patterns: Optional list of file patterns to filter
         archive_processed_files: Whether to archive files after processing
         progress_callback: Callback function for progress updates
-        user_session_id: User session ID for tracking and user-specific processing
     """
     
     # Default progress callback
@@ -53,42 +51,31 @@ async def main_ingestion_pipeline_with_progress(
         message = kwargs.get('log_message', '')
         
         if message:
-            session_info = f"[User: {user_session_id}] " if user_session_id else ""
-            _log.info(f"{session_info}[{progress:.1f}%] {step}: {message}")
+            _log.info(f"[{progress:.1f}%] {step}: {message}")
     
     if progress_callback is None:
         progress_callback = default_progress_callback
     
     # Initialize components
     blob_manager = BlobStorageManager()
-    
-    # Create user-specific document processor if user session provided
-    if user_session_id and data_type == 'dce':
-        # For DCE with user session, pass user session for temp paths
-        processor = DocumentProcessor(progress_callback=progress_callback, user_session_id=user_session_id)
-    else:
-        # For region/technical data, use regular processor
-        processor = DocumentProcessor(progress_callback=progress_callback)
-    
+    processor = DocumentProcessor(progress_callback=progress_callback)
     vector_manager = VectorStoreManager()
     
-    # Set collection name with user support
+    # Set collection name
     if collection_name is None:
-        if data_type == 'dce' and user_session_id:
-            collection_name = Config.get_user_dce_collection_name(user_session_id)
-        else:
-            collection_name = Config.get_collection_name_for_data_type(data_type, region_name)
+        collection_name = f"{data_type}_collection"
+        if region_name:
+            collection_name = f"{data_type}_{region_name}_collection"
     
     # Set archiving behavior based on data type if not explicitly provided
     if archive_processed_files is None:
         archive_processed_files = Config.should_archive_data_type(data_type)
     
-    session_info = f" for user {user_session_id}" if user_session_id else ""
     progress_callback(
         status="starting",
         current_step="Initializing pipeline",
         overall_progress=0,
-        log_message=f"Starting ingestion pipeline for {data_type}{session_info}"
+        log_message=f"Starting ingestion pipeline for {data_type}"
     )
     progress_callback(log_message=f"Collection: {collection_name}")
     progress_callback(log_message=f"Archive after processing: {archive_processed_files}")
@@ -139,7 +126,44 @@ async def main_ingestion_pipeline_with_progress(
             log_message=f"✅ Found {len(blob_names)} files to process"
         )
         
-        # Step 2: Process documents with progress tracking and user support
+        # Verify files exist before processing
+        progress_callback(
+            current_step="Verifying input files",
+            overall_progress=12,
+            log_message="Verifying all input files exist in blob storage..."
+        )
+        
+        verified_files = []
+        missing_files = []
+        
+        for blob_name in blob_names:
+            if blob_manager.verify_blob_exists(Config.INPUT_CONTAINER, blob_name):
+                verified_files.append(blob_name)
+            else:
+                missing_files.append(blob_name)
+                _log.warning(f"File not found in blob storage: {blob_name}")
+        
+        if missing_files:
+            progress_callback(
+                log_message=f"⚠️ {len(missing_files)} files are missing from blob storage"
+            )
+            for missing in missing_files:
+                progress_callback(log_message=f"  Missing: {missing}")
+        
+        if not verified_files:
+            progress_callback(
+                status="error",
+                current_step="No valid files found",
+                log_message="❌ No valid input files found in blob storage!"
+            )
+            return False
+        
+        blob_names = verified_files
+        progress_callback(
+            log_message=f"✅ Verified {len(blob_names)} files are accessible"
+        )
+        
+        # Step 2: Process documents with progress tracking
         progress_callback(
             status="running",
             current_step="Processing documents",
@@ -147,22 +171,13 @@ async def main_ingestion_pipeline_with_progress(
             log_message="Starting document processing with detailed tracking..."
         )
         
-        # Process the documents with user-specific paths if needed
-        if user_session_id and data_type == 'dce':
-            chunks, texts = await processor.process_files_from_blob_with_progress_user(
-                blob_names=blob_names,
-                data_type=data_type,
-                region_name=region_name,
-                input_container=Config.INPUT_CONTAINER,
-                user_session_id=user_session_id
-            )
-        else:
-            chunks, texts = await processor.process_files_from_blob_with_progress(
-                blob_names=blob_names,
-                data_type=data_type,
-                region_name=region_name,
-                input_container=Config.INPUT_CONTAINER
-            )
+        # Process the documents and get results from DocumentProcessor
+        chunks, texts = await processor.process_files_from_blob_with_progress(
+            blob_names=blob_names,
+            data_type=data_type,
+            region_name=region_name,
+            input_container=Config.INPUT_CONTAINER
+        )
         
         # Get tracking results from the processor
         successfully_processed_files = processor.successful_files.copy()
@@ -181,6 +196,23 @@ async def main_ingestion_pipeline_with_progress(
             current_step="Document processing completed",
             log_message=f"✅ Generated {len(chunks)} chunks from {len(successfully_processed_files)}/{len(blob_names)} documents"
         )
+        
+        # Log processing results
+        if successfully_processed_files:
+            progress_callback(
+                log_message=f"Successfully processed files: {len(successfully_processed_files)}"
+            )
+            for i, file in enumerate(successfully_processed_files[:3]):  # Show first 3
+                progress_callback(log_message=f"  ✅ {file}")
+            if len(successfully_processed_files) > 3:
+                progress_callback(log_message=f"  ... and {len(successfully_processed_files) - 3} more")
+        
+        if failed_files:
+            progress_callback(
+                log_message=f"Failed to process files: {len(failed_files)}"
+            )
+            for file in failed_files:
+                progress_callback(log_message=f"  ❌ {file}")
         
         # Step 3: Create/update vector store
         progress_callback(
@@ -202,13 +234,6 @@ async def main_ingestion_pipeline_with_progress(
             step_progress=100,
             log_message="✅ Vector store updated successfully"
         )
-        
-        # Update user session with processed files if user session provided
-        if user_session_id and successfully_processed_files:
-            from utils.user_manager import get_user_manager
-            user_manager = get_user_manager()
-            for filename in successfully_processed_files:
-                user_manager.add_processed_file(user_session_id, filename)
         
         # Step 4: Remove duplicates if requested
         if remove_duplicates:
@@ -468,13 +493,80 @@ async def main_ingestion_pipeline_with_progress(
         return True
         
     except Exception as e:
-        session_info = f" for user {user_session_id}" if user_session_id else ""
         progress_callback(
             status="error",
             current_step="Error occurred",
-            log_message=f"❌ Ingestion pipeline failed{session_info}: {str(e)}"
+            log_message=f"❌ Ingestion pipeline failed: {str(e)}"
         )
+        
+        # If there was an error but some files were processed successfully, 
+        # still try to handle them according to the archiving setting
+        if successfully_processed_files:
+            if archive_processed_files:
+                progress_callback(
+                    log_message="Attempting to archive successfully processed files despite pipeline error..."
+                )
+                try:
+                    archived_files = blob_manager.archive_processed_files(
+                        processed_blob_names=successfully_processed_files,
+                        source_container=Config.INPUT_CONTAINER,
+                        archive_container=Config.ARCHIVE_CONTAINER,
+                        add_timestamp=Config.ARCHIVE_ADD_TIMESTAMP
+                    )
+                    progress_callback(
+                        log_message=f"✅ Archived {len(archived_files)} successfully processed files despite error"
+                    )
+                except Exception as archive_error:
+                    progress_callback(
+                        log_message=f"❌ Failed to archive files after pipeline error: {archive_error}"
+                    )
+            else:
+                progress_callback(
+                    log_message="Attempting to delete successfully processed files despite pipeline error..."
+                )
+                try:
+                    deleted_count = 0
+                    for blob_name in successfully_processed_files:
+                        try:
+                            if blob_manager.verify_blob_exists(Config.INPUT_CONTAINER, blob_name):
+                                blob_manager.delete_blob(Config.INPUT_CONTAINER, blob_name)
+                                deleted_count += 1
+                        except:
+                            continue
+                    progress_callback(
+                        log_message=f"✅ Deleted {deleted_count} successfully processed files despite error"
+                    )
+                except Exception as deletion_error:
+                    progress_callback(
+                        log_message=f"❌ Failed to delete files after pipeline error: {deletion_error}"
+                    )
+        
         return False
+
+
+# Wrapper function for backward compatibility with async handling
+def main_ingestion_pipeline(data_type: str = 'dce', 
+                           region_name: Optional[str] = None,
+                           collection_name: str = None,
+                           recreate_collection: bool = False,
+                           remove_duplicates: bool = False,
+                           file_patterns: List[str] = None,
+                           archive_processed_files: bool = None):
+    """
+    Main ingestion pipeline - wrapper for backward compatibility.
+    This function handles the async call using asyncio.run()
+    """
+    return asyncio.run(main_ingestion_pipeline_with_progress(
+        data_type=data_type,
+        region_name=region_name,
+        collection_name=collection_name,
+        recreate_collection=recreate_collection,
+        remove_duplicates=remove_duplicates,
+        file_patterns=file_patterns,
+        archive_processed_files=archive_processed_files,
+        progress_callback=None  # Use default console logging
+    ))
+
 
 # Debug function to check file management status
 def debug_file_management_status(data_type: str = 'dce'):

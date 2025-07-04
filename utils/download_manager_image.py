@@ -1,11 +1,11 @@
 """
-Image download manager for handling blob storage images in retrieved chunks with user support.
+Image download manager for handling blob storage images in retrieved chunks.
 """
 import logging
 import re
 import shutil
 from pathlib import Path
-from typing import List, Set, Dict, Optional
+from typing import List, Set, Dict
 from azure.core.exceptions import ResourceNotFoundError
 
 from config.config import Config
@@ -13,59 +13,51 @@ from utils.blob_utils import BlobStorageManager
 
 _log = logging.getLogger(__name__)
 
-class UserImageDownloadManager:
-    """Manages downloading images from blob storage to user-specific public folders for display."""
+class ImageDownloadManager:
+    """Manages downloading images from blob storage to public folder for display."""
     
-    def __init__(self, user_session_id: str, public_folder: Path = None):
+    def __init__(self, public_folder: Path = None):
         """
-        Initialize the user-specific image download manager.
+        Initialize the image download manager.
         
         Args:
-            user_session_id: User session ID
-            public_folder: Base public folder (defaults to ./public)
+            public_folder: Path to the public folder (defaults to ./public)
         """
-        self.user_session_id = user_session_id
-        self.base_public_folder = public_folder or Path("./public")
-        
-        # Create user-specific public folder
-        self.user_public_folder = Config.get_user_public_folder(user_session_id)
-        
+        self.public_folder = public_folder or Path("./public")
         self.blob_manager = BlobStorageManager()
+        
+        # Ensure public folder exists
+        self.public_folder.mkdir(exist_ok=True)
         
         # Pattern to match markdown images
         self.image_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
         
-        _log.info(f"UserImageDownloadManager initialized for user {user_session_id} with folder: {self.user_public_folder.absolute()}")
+        _log.info(f"ImageDownloadManager initialized with public folder: {self.public_folder.absolute()}")
     
-    def cleanup_user_images(self):
+    def cleanup_previous_images(self):
         """
-        Delete all previously downloaded images from the user's public folder.
+        Delete all previously downloaded images from the public folder.
         Only deletes image files to avoid removing other static content.
         """
         try:
-            if not self.user_public_folder.exists():
-                _log.debug(f"User public folder doesn't exist: {self.user_public_folder}")
-                return
-            
-            image_files = list(self.user_public_folder.glob("*"))
+            image_files = list(self.public_folder.glob("image_*"))
             
             if image_files:
-                _log.info(f"Cleaning up {len(image_files)} images for user {self.user_session_id}...")
+                _log.info(f"Cleaning up {len(image_files)} previous images from public folder...")
                 
                 for image_file in image_files:
                     try:
-                        if image_file.is_file():
-                            image_file.unlink()
-                            _log.debug(f"Deleted: {image_file.name}")
+                        image_file.unlink()
+                        _log.debug(f"Deleted: {image_file.name}")
                     except Exception as e:
                         _log.warning(f"Failed to delete {image_file.name}: {e}")
                         
-                _log.info(f"✓ Cleaned up {len(image_files)} images for user {self.user_session_id}")
+                _log.info(f"✓ Cleaned up {len(image_files)} previous images")
             else:
-                _log.debug(f"No images to clean up for user {self.user_session_id}")
+                _log.debug("No previous images to clean up")
                 
         except Exception as e:
-            _log.error(f"Error during image cleanup for user {self.user_session_id}: {e}")
+            _log.error(f"Error during image cleanup: {e}")
     
     def extract_image_paths_from_chunks(self, chunks: List) -> Set[str]:
         """
@@ -106,7 +98,7 @@ class UserImageDownloadManager:
                 if filename and self._is_image_file(filename):
                     image_paths.add(filename)
         
-        _log.info(f"Found {len(image_paths)} unique images in chunks for user {self.user_session_id}: {list(image_paths)}")
+        _log.info(f"Found {len(image_paths)} unique images in chunks: {list(image_paths)}")
         return image_paths
     
     def _is_image_file(self, filename: str) -> bool:
@@ -116,7 +108,7 @@ class UserImageDownloadManager:
     
     def download_images_from_blob(self, image_filenames: Set[str]) -> Dict[str, str]:
         """
-        Download images from blob storage to user's public folder.
+        Download images from blob storage to public folder.
         
         Args:
             image_filenames: Set of image filenames to download
@@ -125,23 +117,23 @@ class UserImageDownloadManager:
             Dict mapping original filename to downloaded filename
         """
         if not image_filenames:
-            _log.info(f"No images to download for user {self.user_session_id}")
+            _log.info("No images to download")
             return {}
         
         downloaded_mapping = {}
         successful_downloads = 0
         failed_downloads = 0
         
-        _log.info(f"Starting download of {len(image_filenames)} images for user {self.user_session_id}...")
+        _log.info(f"Starting download of {len(image_filenames)} images...")
         
         for filename in image_filenames:
             try:
-                # Use the original filename in user's folder
-                local_path = self.user_public_folder / filename
+                # Use the original filename (no prefix needed)
+                local_path = self.public_folder / filename
                 
                 # Check if file already exists and is recent
                 if local_path.exists():
-                    _log.debug(f"Image already exists for user {self.user_session_id}, skipping: {filename}")
+                    _log.debug(f"Image already exists, skipping: {filename}")
                     downloaded_mapping[filename] = filename
                     successful_downloads += 1
                     continue
@@ -161,21 +153,22 @@ class UserImageDownloadManager:
                 
                 downloaded_mapping[filename] = filename
                 successful_downloads += 1
-                _log.debug(f"Downloaded for user {self.user_session_id}: {filename}")
+                _log.debug(f"Downloaded: {filename} -> {filename}")
                 
             except ResourceNotFoundError:
-                _log.warning(f"Image not found in blob storage for user {self.user_session_id}: {filename}")
+                _log.warning(f"Image not found in blob storage: {filename}")
                 failed_downloads += 1
             except Exception as e:
-                _log.error(f"Failed to download {filename} for user {self.user_session_id}: {e}")
+                _log.error(f"Failed to download {filename}: {e}")
                 failed_downloads += 1
         
-        _log.info(f"Image download completed for user {self.user_session_id}: {successful_downloads} successful, {failed_downloads} failed")
+        _log.info(f"Image download completed: {successful_downloads} successful, {failed_downloads} failed")
         return downloaded_mapping
     
     def update_chunk_image_paths(self, chunks: List, image_mapping: Dict[str, str]) -> List:
         """
-        Update image paths in chunks to point to the user's public folder.
+        Update image paths in chunks to point to the public folder.
+        Note: This creates public/ references that will be converted to HTTP URLs by the backend.
         
         Args:
             chunks: List of document chunks
@@ -205,24 +198,28 @@ class UserImageDownloadManager:
             updated_chunk.page_content = updated_content
             updated_chunks.append(updated_chunk)
         
-        _log.info(f"Updated image paths in {len(updated_chunks)} chunks for user {self.user_session_id}")
+        _log.info(f"Updated image paths in {len(updated_chunks)} chunks")
         return updated_chunks
     
     def _replace_image_paths_in_content(self, content: str, image_mapping: Dict[str, str]) -> str:
         """
-        Replace image paths in content with user-specific public folder paths.
+        Replace image paths in content with public folder paths.
         
         Args:
             content: Original content with image references
             image_mapping: Mapping of original to downloaded filenames
             
         Returns:
-            Updated content with user-specific public/ paths
+            Updated content with public/ paths (will be converted to HTTP URLs later)
         """
         def replace_image_path(match):
             alt_text = match.group(1)
             original_path = match.group(2).strip()
-            
+            """
+            # Skip if already processed or external
+            if original_path.startswith(('public/', 'http://', 'https://', 'data:', '/images/')):
+                return match.group(0)
+            """
             # Extract filename from path
             if '/' in original_path:
                 filename = original_path.split('/')[-1]
@@ -232,8 +229,8 @@ class UserImageDownloadManager:
             # Check if we have a mapping for this image
             if filename in image_mapping:
                 downloaded_filename = image_mapping[filename]
-                # Use user-specific public path
-                new_path = f"public/user_{self.user_session_id}/{downloaded_filename}"
+                # Use public/ prefix - this will be converted to HTTP URL by backend
+                new_path = f"public/{downloaded_filename}"
                 return f"![{alt_text}]({new_path})"
             
             # Return original if no mapping found
@@ -245,7 +242,7 @@ class UserImageDownloadManager:
         if updated_content != content:
             original_images = set(self.image_pattern.findall(content))
             updated_images = set(self.image_pattern.findall(updated_content))
-            _log.debug(f"Image path update for user {self.user_session_id}: {len(original_images)} -> {len(updated_images)} images")
+            _log.debug(f"Image path update: {len(original_images)} -> {len(updated_images)} images")
         
         return updated_content
     
@@ -260,41 +257,41 @@ class UserImageDownloadManager:
             List of updated chunks with corrected image paths
         """
         if not chunks:
-            _log.debug(f"No chunks provided for image processing for user {self.user_session_id}")
+            _log.debug("No chunks provided for image processing")
             return chunks
         
         try:
-            _log.info(f"Processing {len(chunks)} chunks for images for user {self.user_session_id}...")
+            _log.info(f"Processing {len(chunks)} chunks for images...")
             
             # Step 1: Extract image paths from chunks
             image_paths = self.extract_image_paths_from_chunks(chunks)
             
             if not image_paths:
-                _log.info(f"No images found in chunks for user {self.user_session_id}")
+                _log.info("No images found in chunks")
                 return chunks
             
             # Step 2: Download images from blob storage
             image_mapping = self.download_images_from_blob(image_paths)
             
             if not image_mapping:
-                _log.warning(f"No images were downloaded successfully for user {self.user_session_id}")
+                _log.warning("No images were downloaded successfully")
                 return chunks
             
             # Step 3: Update chunk image paths
             updated_chunks = self.update_chunk_image_paths(chunks, image_mapping)
             
-            _log.info(f"✓ Successfully processed {len(updated_chunks)} chunks with {len(image_mapping)} images for user {self.user_session_id}")
+            _log.info(f"✓ Successfully processed {len(updated_chunks)} chunks with {len(image_mapping)} images")
             return updated_chunks
             
         except Exception as e:
-            _log.error(f"Error processing chunks with images for user {self.user_session_id}: {e}")
+            _log.error(f"Error processing chunks with images: {e}")
             import traceback
             traceback.print_exc()
             return chunks  # Return original chunks on error
     
     def get_downloaded_images_info(self) -> List[Dict[str, any]]:
         """
-        Get information about currently downloaded images in the user's public folder.
+        Get information about currently downloaded images in the public folder.
         
         Returns:
             List of dictionaries containing image information
@@ -302,38 +299,33 @@ class UserImageDownloadManager:
         images_info = []
         
         try:
-            if not self.user_public_folder.exists():
-                return images_info
-            
-            image_files = list(self.user_public_folder.glob("*"))
+            image_files = list(self.public_folder.glob("image_*"))
             
             for image_file in image_files:
                 try:
-                    if image_file.is_file():
-                        stat = image_file.stat()
-                        images_info.append({
-                            'filename': image_file.name,
-                            'path': str(image_file),
-                            'url': f"/images/user_{self.user_session_id}/{image_file.name}",  # HTTP URL for access
-                            'size_bytes': stat.st_size,
-                            'size_mb': round(stat.st_size / (1024 * 1024), 2),
-                            'modified': stat.st_mtime,
-                            'user_session_id': self.user_session_id
-                        })
+                    stat = image_file.stat()
+                    images_info.append({
+                        'filename': image_file.name,
+                        'path': str(image_file),
+                        'url': f"/images/{image_file.name}",  # HTTP URL for access
+                        'size_bytes': stat.st_size,
+                        'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                        'modified': stat.st_mtime
+                    })
                 except Exception as e:
                     _log.warning(f"Error getting info for {image_file.name}: {e}")
             
             images_info.sort(key=lambda x: x['filename'])
-            _log.debug(f"Found {len(images_info)} images in user {self.user_session_id} public folder")
+            _log.debug(f"Found {len(images_info)} images in public folder")
             
         except Exception as e:
-            _log.error(f"Error getting downloaded images info for user {self.user_session_id}: {e}")
+            _log.error(f"Error getting downloaded images info: {e}")
         
         return images_info
     
     def verify_image_access(self, filename: str) -> Dict[str, any]:
         """
-        Verify that an image exists and can be accessed for this user.
+        Verify that an image exists and can be accessed.
         
         Args:
             filename: Name of the image file
@@ -341,15 +333,14 @@ class UserImageDownloadManager:
         Returns:
             Dict with verification results
         """
-        image_path = self.user_public_folder / filename
+        image_path = self.public_folder / filename
         
         result = {
             'filename': filename,
             'exists': False,
             'accessible': False,
-            'url': f"/images/user_{self.user_session_id}/{filename}",
+            'url': f"/images/{filename}",
             'local_path': str(image_path),
-            'user_session_id': self.user_session_id,
             'error': None
         }
         
@@ -376,74 +367,45 @@ class UserImageDownloadManager:
         return result
 
 
-# User manager instances
-_user_image_managers = {}
+# Global instance
+_image_download_manager = None
 
-def get_user_image_download_manager(user_session_id: str) -> UserImageDownloadManager:
-    """Get or create a user-specific image download manager instance."""
-    global _user_image_managers
-    if user_session_id not in _user_image_managers:
-        _user_image_managers[user_session_id] = UserImageDownloadManager(user_session_id)
-    return _user_image_managers[user_session_id]
-
-
-def cleanup_user_image_manager(user_session_id: str):
-    """Cleanup and remove a user's image manager."""
-    global _user_image_managers
-    if user_session_id in _user_image_managers:
-        manager = _user_image_managers[user_session_id]
-        manager.cleanup_user_images()
-        del _user_image_managers[user_session_id]
-        _log.info(f"Cleaned up image manager for user {user_session_id}")
+def get_image_download_manager() -> ImageDownloadManager:
+    """Get or create the global image download manager instance."""
+    global _image_download_manager
+    if _image_download_manager is None:
+        _image_download_manager = ImageDownloadManager()
+    return _image_download_manager
 
 
-# Convenience functions with user support
-def cleanup_previous_images(user_session_id: str = None):
+# Convenience functions
+def cleanup_previous_images():
     """Cleanup previous images from public folder."""
-    if user_session_id:
-        manager = get_user_image_download_manager(user_session_id)
-        manager.cleanup_user_images()
-    else:
-        # Cleanup all users (for backward compatibility)
-        base_public = Path("./public")
-        if base_public.exists():
-            for user_folder in base_public.glob("user_*"):
-                if user_folder.is_dir():
-                    try:
-                        shutil.rmtree(user_folder)
-                        _log.info(f"Cleaned up folder: {user_folder}")
-                    except Exception as e:
-                        _log.error(f"Error cleaning up {user_folder}: {e}")
+    manager = get_image_download_manager()
+    manager.cleanup_previous_images()
 
 
-def process_chunks_with_images(chunks: List, user_session_id: str) -> List:
+def process_chunks_with_images(chunks: List) -> List:
     """
-    Process chunks to download and update image paths for a specific user.
+    Process chunks to download and update image paths.
     
     Args:
         chunks: List of document chunks
-        user_session_id: User session ID
         
     Returns:
         List of updated chunks with corrected image paths
     """
-    manager = get_user_image_download_manager(user_session_id)
+    manager = get_image_download_manager()
     return manager.process_chunks_with_images(chunks)
 
 
-def get_downloaded_images_info(user_session_id: str) -> List[Dict[str, any]]:
-    """Get information about downloaded images for a specific user."""
-    manager = get_user_image_download_manager(user_session_id)
+def get_downloaded_images_info() -> List[Dict[str, any]]:
+    """Get information about downloaded images."""
+    manager = get_image_download_manager()
     return manager.get_downloaded_images_info()
 
 
-def verify_image_access(filename: str, user_session_id: str) -> Dict[str, any]:
-    """Verify that an image can be accessed via HTTP for a specific user."""
-    manager = get_user_image_download_manager(user_session_id)
+def verify_image_access(filename: str) -> Dict[str, any]:
+    """Verify that an image can be accessed via HTTP."""
+    manager = get_image_download_manager()
     return manager.verify_image_access(filename)
-
-
-# Legacy functions for backward compatibility
-def get_image_download_manager():
-    """Legacy function - returns a default manager"""
-    return get_user_image_download_manager("default")

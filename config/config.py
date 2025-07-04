@@ -1,4 +1,3 @@
-# config/config.py (Updated sections)
 import os
 from pathlib import Path
 from typing import Dict, Optional
@@ -27,13 +26,9 @@ class Config:
     FINETUNED_BGE_RERANKER_MODEL_ID = "finetuned_models/bge-reranker-v2-m3_finetuned_0404_10am/checkpoint-711"
     
     # === Collection Names ===
-    COLLECTION_NAME = "region_paca_documents"  # Technical/Region collection (SHARED)
-    # DCE collections are now per-user: dce_user_{session_id}
+    COLLECTION_NAME = "region_paca_documents"  # Technical/Region collection
+    DCE_COLLECTION = "dce_documents"            # DCE collection
     REGION_COLLECTION_BASE_NAME = "region_"
-    
-    # === User Management ===
-    USER_SESSION_TIMEOUT = int(os.getenv("USER_SESSION_TIMEOUT", "3600"))  # 1 hour
-    USER_CLEANUP_INTERVAL = int(os.getenv("USER_CLEANUP_INTERVAL", "300"))  # 5 minutes
     
     # === Processing Settings ===
     DEFAULT_MAX_TOKENS = 1024
@@ -72,8 +67,9 @@ class Config:
     EXPORTS_CONTAINER = "exports"
     ARCHIVE_CONTAINER = "archive"  
 
-    # Base folders - will be user-specific
     IMAGES_FOLDER = Path("./public")
+    
+    # Local temp directory for processing
     TEMP_DIR = Path("./temp")
     
     # Default archiving behavior - can be overridden per ingestion
@@ -117,13 +113,12 @@ class Config:
                     print(f"Error creating container {container_name}: {e}")
     
     @classmethod
-    def get_user_temp_paths(cls, user_session_id: str, data_type: str, region_name: str = None):
-        """Get temporary local paths for processing per user"""
-        # Create user-specific temp directory
+    def get_temp_paths(cls, data_type: str, region_name: str = None):
+        """Get temporary local paths for processing"""
         if data_type == 'region' and region_name:
-            base_dir = cls.TEMP_DIR / f"user_{user_session_id}" / f"region_{region_name}"
+            base_dir = cls.TEMP_DIR / f"region_{region_name}"
         else:
-            base_dir = cls.TEMP_DIR / f"user_{user_session_id}" / data_type
+            base_dir = cls.TEMP_DIR / data_type
             
         paths = {
             "base": base_dir,
@@ -140,18 +135,6 @@ class Config:
         return paths
     
     @classmethod
-    def get_user_public_folder(cls, user_session_id: str) -> Path:
-        """Get user-specific public folder for images"""
-        public_folder = cls.IMAGES_FOLDER / f"user_{user_session_id}"
-        public_folder.mkdir(parents=True, exist_ok=True)
-        return public_folder
-    
-    @classmethod
-    def get_user_dce_collection_name(cls, user_session_id: str) -> str:
-        """Get user-specific DCE collection name"""
-        return f"dce_user_{user_session_id}"
-    
-    @classmethod
     def should_archive_data_type(cls, data_type: str) -> bool:
         """
         Determine if files of a given data type should be archived by default.
@@ -165,24 +148,19 @@ class Config:
         return cls.ARCHIVE_RULES.get(data_type.lower(), cls.ARCHIVE_AFTER_PROCESSING)
     
     @classmethod
-    def get_collection_name_for_data_type(cls, data_type: str, region_name: str = None, user_session_id: str = None) -> str:
+    def get_collection_name_for_data_type(cls, data_type: str, region_name: str = None) -> str:
         """
         Get the appropriate collection name for a data type.
         
         Args:
             data_type: The type of data ('dce', 'region', 'technical')
             region_name: Optional region name for regional data
-            user_session_id: User session ID for DCE collections
             
         Returns:
             str: Collection name
         """
         if data_type.lower() == 'dce':
-            if user_session_id:
-                return cls.get_user_dce_collection_name(user_session_id)
-            else:
-                # Fallback to generic DCE collection
-                return "dce_documents"
+            return cls.DCE_COLLECTION
         elif data_type.lower() == 'region' and region_name:
             return f"region_{region_name.lower()}_documents"
         elif data_type.lower() == 'technical':
@@ -219,12 +197,7 @@ class Config:
             "qdrant_url": cls.QDRANT_URL,
             "collections": {
                 "technical": cls.COLLECTION_NAME,
-                "dce_pattern": "dce_user_{session_id}",
-                "user_specific": True
-            },
-            "user_management": {
-                "session_timeout": cls.USER_SESSION_TIMEOUT,
-                "cleanup_interval": cls.USER_CLEANUP_INTERVAL
+                "dce": cls.DCE_COLLECTION
             },
             "archiving": {
                 "default_behavior": cls.ARCHIVE_AFTER_PROCESSING,

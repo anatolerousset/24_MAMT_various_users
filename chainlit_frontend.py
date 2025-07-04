@@ -1,5 +1,5 @@
 """
-Chainlit frontend that communicates with the backend API with user session support
+Chainlit frontend that communicates with the backend API
 """
 import os
 import httpx
@@ -19,14 +19,13 @@ _log = logging.getLogger(__name__)
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8001")
 IMAGES_URL = os.getenv("IMAGES_URL", "http://localhost:8001")
 
-class UserSessionManager:
-    def __init__(self, user_session_id: str = None):
-        self.user_session_id = user_session_id
+# Session storage for response history
+class SessionManager:
+    def __init__(self):
         self.response_history = []
         self.last_search_results = {}
         self.current_query = ""
         self.user_specifications = None
-        self.user_info = None
     
     def add_response(self, content: str, query: str, sources: List[Tuple[str, int]], specifications: str = None):
         """Add response to history"""
@@ -35,8 +34,7 @@ class UserSessionManager:
             "query": query,
             "sources": sources,
             "timestamp": datetime.now().strftime("%d/%m/%Y à %H:%M"),
-            "specifications": specifications,
-            "user_session_id": self.user_session_id
+            "specifications": specifications
         }
         self.response_history.append(entry)
     
@@ -47,49 +45,6 @@ class UserSessionManager:
     def clear_history(self):
         """Clear response history"""
         self.response_history = []
-
-async def initialize_user_session():
-    """Initialize or get user session from backend"""
-    try:
-        # Try to get existing session from cl.user_session
-        stored_session_id = cl.user_session.get("user_session_id")
-        
-        if stored_session_id:
-            # Verify session is still valid
-            async with httpx.AsyncClient() as client:
-                headers = {"X-User-Session": stored_session_id}
-                response = await client.get(f"{BACKEND_URL}/api/user/info", headers=headers, timeout=10.0)
-                
-                if response.status_code == 200:
-                    user_info = response.json()
-                    _log.info(f"Using existing user session: {stored_session_id}")
-                    return stored_session_id, user_info
-        
-        # Create new session
-        async with httpx.AsyncClient() as client:
-            # You could pass user identifier here if available
-            response = await client.post(
-                f"{BACKEND_URL}/api/user/session", 
-                json={"user_identifier": None},  # Could be email, username, etc.
-                timeout=10.0
-            )
-            
-            if response.status_code == 200:
-                session_data = response.json()
-                session_id = session_data["session_id"]
-                
-                # Store in cl.user_session
-                cl.user_session.set("user_session_id", session_id)
-                
-                _log.info(f"Created new user session: {session_id}")
-                return session_id, session_data
-            else:
-                _log.error(f"Failed to create user session: {response.status_code}")
-                return None, None
-                
-    except Exception as e:
-        _log.error(f"Error initializing user session: {e}")
-        return None, None
 
 async def update_progress_bar(status_msg, duration_seconds=9):
     """Update progress bar over specified duration"""
@@ -122,14 +77,13 @@ async def update_progress_bar(status_msg, duration_seconds=9):
         if i < steps:  # Don't sleep after the last update
             await asyncio.sleep(step_duration)
 
-def process_images_for_chainlit(content: str, user_session_id: str = None) -> str:
+def process_images_for_chainlit(content: str) -> str:
     """
     Process image URLs in content to ensure they work with Chainlit.
-    Convert backend image URLs to proper format for Chainlit display with user support.
+    Convert backend image URLs to proper format for Chainlit display.
     
     Args:
         content: Content with image references
-        user_session_id: User session ID for user-specific images
         
     Returns:
         Content with Chainlit-compatible image references
@@ -144,27 +98,13 @@ def process_images_for_chainlit(content: str, user_session_id: str = None) -> st
         # Extract filename from path
         if '/' in image_url:
             filename = image_url.split('/')[-1]
-            # Check if it's already a user-specific path
-            if user_session_id and f"user_{user_session_id}" in image_url:
-                # Already user-specific, use as is but convert to HTTP URL
-                new_path = f"{IMAGES_URL}/images/user_{user_session_id}/{filename}"
-            elif user_session_id:
-                # Not user-specific, make it user-specific
-                new_path = f"{IMAGES_URL}/images/user_{user_session_id}/{filename}"
-            else:
-                # No user session, use general path
-                new_path = f"{IMAGES_URL}/images/{filename}"
         else:
             filename = image_url
-            if user_session_id:
-                new_path = f"{IMAGES_URL}/images/user_{user_session_id}/{filename}"
-            else:
-                new_path = f"{IMAGES_URL}/images/{filename}"
 
-        if user_session_id:
-            _log.info(f"Image URL processing for user {user_session_id}: {image_url} -> {new_path}")
-        else:
-            _log.info(f"Image URL processing: {image_url} -> {new_path}")
+        new_path = f"{IMAGES_URL}/images/{filename}"
+        _log.info(f"ancien chemin : {image_url}")
+        _log.info(f"filename chemin : {filename}")
+        _log.info(f"nouveau chemin : {new_path}")
         return f"![{alt_text}]({new_path})"
 
     processed_content = image_pattern.sub(replace_image_url, content)
@@ -172,24 +112,14 @@ def process_images_for_chainlit(content: str, user_session_id: str = None) -> st
 
 @cl.on_chat_start
 async def on_chat_start():
-    """Initialize the chat session with user support"""
-    # Initialize user session
-    user_session_id, user_info = await initialize_user_session()
-    
-    if not user_session_id:
-        await cl.Message(content="❌ **Erreur d'initialisation de session utilisateur**\n\nImpossible de créer une session utilisateur.").send()
-        return
-    
-    # Initialize session manager with user session
-    session_manager = UserSessionManager(user_session_id)
-    session_manager.user_info = user_info
+    """Initialize the chat session"""
+    # Initialize session manager
+    session_manager = SessionManager()
     cl.user_session.set("session_manager", session_manager)
     
     try:
         # Check backend health and get configuration
         async with httpx.AsyncClient() as client:
-            headers = {"X-User-Session": user_session_id}
-            
             health_response = await client.get(f"{BACKEND_URL}/health", timeout=10.0)
             config_response = await client.get(f"{BACKEND_URL}/api/config", timeout=10.0)
             
@@ -203,11 +133,6 @@ async def on_chat_start():
                 if status == "healthy":
                     welcome_msg = "🟢 **Mon assistant mémoire technique opérationnel**\n\n"
                     
-                    # Display user session info
-                    if user_info:
-                        welcome_msg += f"**Session utilisateur:** `{user_session_id}`\n"
-                        welcome_msg += f"**Collection DCE personnelle:** `{user_info.get('dce_collection', 'N/A')}`\n\n"
-                    
                     # Display service status
                     service_status = []
                     if services.get("qdrant") == "healthy":
@@ -216,7 +141,16 @@ async def on_chat_start():
                         service_status.append("✓ Modèle de langage")
                     if services.get("blob_storage") == "healthy":
                         service_status.append("✓ Stockage cloud")
-                    
+                    """
+                    if services.get("backend_docx_exporter") == "healthy":
+                        service_status.append("✓ Export DOCX")
+                    if services.get("image_manager") == "healthy":
+                        service_status.append("✓ Gestionnaire d'images")
+                    if services.get("image_serving") == "healthy":
+                        service_status.append("✓ Serveur d'images")
+                        image_count = services.get("available_images", 0)
+                        service_status.append(f"✓ {image_count} images disponibles")
+                    """
                     welcome_msg += "**Services actifs:** " + ", ".join(service_status) + "\n\n"
                     
                     # Display configuration
@@ -224,8 +158,8 @@ async def on_chat_start():
                     llm_info = config_data.get("llm", {})
                     
                     welcome_msg += f"**Collections disponibles:**\n"
-                    welcome_msg += f"- Technique (partagée): `{collections.get('technical', 'N/A')}`\n"
-                    welcome_msg += f"- DCE (personnelle): `{user_info.get('dce_collection') if user_info else 'N/A'}`\n\n"
+                    welcome_msg += f"- Technique: `{collections.get('technical', 'N/A')}`\n"
+                    welcome_msg += f"- DCE: `{collections.get('dce', 'N/A')}`\n\n"
                     welcome_msg += f"**LLM actif:** {llm_info.get('provider', 'N/A')}\n\n"
                     
                 else:
@@ -235,46 +169,36 @@ async def on_chat_start():
     except Exception as e:
         welcome_msg = f"🔴 **Erreur de connexion**\n\nErreur: {str(e)}"
     
-    # Add user session cleanup option
-    welcome_msg += "\n\n💡 **Note:** Votre session est personnelle et sera automatiquement nettoyée après inactivité."
-    
     try:
         async with httpx.AsyncClient() as client:
-            headers = {"X-User-Session": user_session_id}
-            response = await client.get(f"{BACKEND_URL}/api/collections", headers=headers, timeout=10.0)
+            response = await client.get(f"{BACKEND_URL}/api/collections", timeout=10.0)
             if response.status_code == 200:
                 collections_data = response.json()
                 collections = collections_data.get("collections", [])
                 if collections:
-                    _log.info(f"Collections vectorielles disponibles: {', '.join(collections)}")
+                    _log.info(f"\n**Collections vectorielles:** {', '.join(collections)}")
             else:
-                _log.info(f"⚠️ Impossible de récupérer les collections.")
+                _log.info(f"\n⚠️ Impossible de récupérer les collections.")
     except Exception as e:
-        _log.info(f"⚠️ Erreur lors de la récupération des collections: {str(e)}")
+        _log.info(f"\n⚠️ Erreur lors de la récupération des collections: {str(e)}")
 
-    _log.info(f"Backend URL: {BACKEND_URL}")
-    _log.info(f"User Session ID: {user_session_id}")
+    _log.info(f"\n\n**Backend URL:** {BACKEND_URL}")
 
     current_host = os.getenv("CHAINLIT_HOST", "localhost")
     streamlit_frontend_url = f"http://{current_host}:8501"
-    welcome_msg += f"\n\n📁 **Interface d'ingestion Streamlit** {streamlit_frontend_url}"
+    welcome_msg += f"\n 📁 **Interface d'ingestion Streamlit** {streamlit_frontend_url}"
 
     welcome_msg += "\n\n**Écrivez le titre du paragraphe à générer pour commencer !**"
+
     
     await cl.Message(content=welcome_msg).send()
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    """Handle incoming messages with dual search and progress bar with user support"""
+    """Handle incoming messages with dual search and progress bar"""
     query = message.content
     session_manager = cl.user_session.get("session_manager")
-    
-    if not session_manager or not session_manager.user_session_id:
-        await cl.Message(content="❌ **Erreur de session**\n\nSession utilisateur invalide.").send()
-        return
-    
     session_manager.current_query = query
-    user_session_id = session_manager.user_session_id
     
     # Show initial status message with progress bar
     status_msg = await cl.Message(content="🔍 **Recherche hybride en cours...** Initialisation\n\n[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%").send()
@@ -286,7 +210,7 @@ async def on_message(message: cl.Message):
         # Start progress bar task
         progress_task = asyncio.create_task(update_progress_bar(status_msg, Config.RESEARCH_WAITING_TIME)) 
         
-        # Perform dual search (both collections) with user session
+        # Perform dual search (both collections)
         async with httpx.AsyncClient() as client:
             search_payload = {
                 "query": query,
@@ -295,25 +219,23 @@ async def on_message(message: cl.Message):
                 "use_reranker": True
             }
             
-            headers = {"X-User-Session": user_session_id}
-            
             # Start the search request
             search_task = asyncio.create_task(
                 client.post(
                     f"{BACKEND_URL}/api/dual-search",
                     json=search_payload,
-                    headers=headers,
                     timeout=60.0  # Increased timeout for image processing
                 )
             )
             
             # Wait for search to complete, but don't wait for progress bar
+            # This allows results to be displayed as soon as they're ready
             done, pending = await asyncio.wait(
                 [progress_task, search_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
             
-            # Get the search response
+            # Get the search response (it should be ready now)
             response = await search_task
             
             # Cancel the progress bar if search completed first
@@ -338,8 +260,8 @@ async def on_message(message: cl.Message):
                 status_msg.content = f"✅ **Recherche terminée** - {total_documents} documents trouvés "
                 await status_msg.update()
                 
-                # Display results with user-specific image processing
-                await display_search_results(technical_results, dce_results, user_session_id)
+                # Display results
+                await display_search_results(technical_results, dce_results)
                 
                 if total_documents == 0:
                     await cl.Message(content="❌ **Aucun document trouvé**\n\nVeuillez reformuler votre titre de paragraphe.").send()
@@ -367,8 +289,8 @@ async def on_message(message: cl.Message):
         status_msg.content = f"❌ **Erreur:** {str(e)}"
         await status_msg.update()
 
-async def display_search_results(technical_results: Dict, dce_results: Dict, user_session_id: str):
-    """Display search results from both collections with user-specific image handling"""
+async def display_search_results(technical_results: Dict, dce_results: Dict):
+    """Display search results from both collections with proper image handling"""
     
     # Display technical collection results
     if technical_results.get("documents"):
@@ -378,7 +300,7 @@ async def display_search_results(technical_results: Dict, dce_results: Dict, use
         origins = technical_results["origins"]
         
         await display_collection_results(docs, scores, origins, collection_name, 
-                                        technical_results.get("reranked", False), user_session_id)
+                                       technical_results.get("reranked", False))
     
     # Display DCE collection results
     if dce_results.get("documents"):
@@ -388,12 +310,11 @@ async def display_search_results(technical_results: Dict, dce_results: Dict, use
         origins = dce_results["origins"]
         
         await display_collection_results(docs, scores, origins, collection_name,
-                                        dce_results.get("reranked", False), user_session_id)
+                                       dce_results.get("reranked", False))
 
 async def display_collection_results(docs: List[Dict], scores: List[float], 
-                                   origins: List[str], collection_name: str, 
-                                   reranked: bool, user_session_id: str):
-    """Display results from a specific collection with user-specific image processing"""
+                                   origins: List[str], collection_name: str, reranked: bool):
+    """Display results from a specific collection with image processing"""
     if not docs:
         return
     
@@ -424,13 +345,13 @@ async def display_collection_results(docs: List[Dict], scores: List[float],
         if headings and isinstance(headings, list):
             content += f"**Titres**: {' > '.join(headings)}\n"
         
-        # Add content preview with user-specific image processing
+        # Add content preview with image processing
         page_content = doc.get('page_content', '')
         
-        # Process images for Chainlit display with user session
-        processed_content = process_images_for_chainlit(page_content, user_session_id)
+        # Process images for Chainlit display
+        processed_content = process_images_for_chainlit(page_content)
         
-        content += f"\n{processed_content}"
+        content += f"\n{processed_content}" #[:500]}..."
                 
         if i == 0:
             content = header + content
@@ -581,9 +502,7 @@ async def show_collection_selection_with_specs(user_specifications: str):
 async def stream_chat_response_text_only(query: str, technical_docs: list, dce_docs: list, 
                                         user_specifications: str = None, use_both: bool = True, 
                                         use_technical: bool = False):
-    """Simple text-only streaming without SSE parsing with user support"""
-    session_manager = cl.user_session.get("session_manager")
-    user_session_id = session_manager.user_session_id if session_manager else None
+    """Simple text-only streaming without SSE parsing"""
     
     chat_payload = {
         "query": query,
@@ -593,8 +512,6 @@ async def stream_chat_response_text_only(query: str, technical_docs: list, dce_d
         "use_both": use_both,
         "use_technical": use_technical
     }
-    
-    headers = {"X-User-Session": user_session_id} if user_session_id else {}
     
     response_msg = cl.Message(content="")
     await response_msg.send()
@@ -607,7 +524,6 @@ async def stream_chat_response_text_only(query: str, technical_docs: list, dce_d
                 "POST",
                 f"{BACKEND_URL}/api/chat/stream-text",
                 json=chat_payload,
-                headers=headers,
                 timeout=300.0
             ) as response:
                 
@@ -639,10 +555,11 @@ async def stream_chat_response_text_only(query: str, technical_docs: list, dce_d
                 sources.add((source, page))
         
         # Get search results from session manager
+        session_manager = cl.user_session.get("session_manager")
         search_results = session_manager.last_search_results if session_manager else {}
         
-        # Show export options with the accumulated content and user session
-        _log.info(f"ACCUMULATED CONTENT: {accumulated_content}")
+        # Show export options with the accumulated content
+        _log.info(f"ACCUMULATED CONTENET: {accumulated_content}")
 
         await show_export_options(
             content=accumulated_content,
@@ -658,13 +575,8 @@ async def stream_chat_response_text_only(query: str, technical_docs: list, dce_d
 
 @cl.action_callback("generate_response")
 async def on_generate_response_action_streaming(action: cl.Action):
-    """Handle response generation with streaming support and user session"""
+    """Handle response generation with streaming support"""
     session_manager = cl.user_session.get("session_manager")
-    
-    if not session_manager or not session_manager.user_session_id:
-        await cl.Message(content="❌ **Erreur de session**\n\nSession utilisateur invalide.").send()
-        return
-    
     search_results = session_manager.last_search_results
     query = session_manager.current_query
     
@@ -706,17 +618,16 @@ async def on_generate_response_action_streaming(action: cl.Action):
     gen_msg.content = "✅ **Génération streaming terminée**"
     await gen_msg.update()
 
+
 @cl.action_callback("cancel_generation")
 async def on_cancel_generation_action(action: cl.Action):
     """Handle generation cancellation"""
     await cl.Message(content="❌ **Génération annulée.** Vous pouvez demander un nouveau paragraphe.").send()
 
+
 async def show_export_options(content: str, query: str, sources: List[Tuple[str, int]],
                             technical_docs: List[Dict], dce_docs: List[Dict], search_results: Dict):
-    """Show export options after response generation with user session support"""
-    session_manager = cl.user_session.get("session_manager")
-    user_session_id = session_manager.user_session_id if session_manager else None
-    
+    """Show export options after response generation"""
     actions = []
     
     tech_scores = search_results.get("technical_results", {}).get("scores", [])
@@ -724,21 +635,20 @@ async def show_export_options(content: str, query: str, sources: List[Tuple[str,
     dce_scores = search_results.get("dce_results", {}).get("scores", [])
     dce_origins = search_results.get("dce_results", {}).get("origins", [])
 
-    # Simple response export with download (user session included in payload)
+    # Simple response export with download
     actions.append(
         cl.Action(
             name="export_response_only_download",  
             payload={
-                "content": content,
-                "query": query,
-                "sources": sources,
-                "technical_docs": technical_docs,
-                "technical_scores": tech_scores,
-                "technical_origins": tech_origins,
-                "dce_docs": dce_docs,
-                "dce_scores": dce_scores,
-                "dce_origins": dce_origins,
-                "user_session_id": user_session_id
+                    "content": content,
+                    "query": query,
+                    "sources": sources,
+                    "technical_docs": technical_docs,
+                    "technical_scores": tech_scores,
+                    "technical_origins": tech_origins,
+                    "dce_docs": dce_docs,
+                    "dce_scores": dce_scores,
+                    "dce_origins": dce_origins
             },
             label="📄 Exporter le paragraphe généré (DOCX)"
         )
@@ -756,8 +666,7 @@ async def show_export_options(content: str, query: str, sources: List[Tuple[str,
                 "technical_origins": tech_origins,
                 "dce_docs": dce_docs,
                 "dce_scores": dce_scores,
-                "dce_origins": dce_origins,
-                "user_session_id": user_session_id
+                "dce_origins": dce_origins
             },
             label="📑 Exporter tous les paragraphes récupérés (DOCX)"
         )
@@ -771,7 +680,7 @@ async def show_export_options(content: str, query: str, sources: List[Tuple[str,
 
 @cl.action_callback("export_response_only_download")
 async def on_export_response_only_download_action(action: cl.Action):
-    """Handle simple response export with direct download and user session support"""
+    """Handle simple response export with direct download"""
     try:
         content = action.payload.get("content", "")
         query = action.payload.get("query", "")
@@ -782,7 +691,6 @@ async def on_export_response_only_download_action(action: cl.Action):
         dce_docs = action.payload.get("dce_docs", [])
         dce_scores = action.payload.get("dce_scores", [])
         dce_origins = action.payload.get("dce_origins", [])
-        user_session_id = action.payload.get("user_session_id")
         
         if not content:
             await cl.Message(content="❌ Aucun contenu à exporter.").send()
@@ -790,7 +698,7 @@ async def on_export_response_only_download_action(action: cl.Action):
         
         export_status = await cl.Message(content="📄 **Export DOCX en cours...**").send()
         
-        # Use the direct download endpoint with user session
+        # Use the direct download endpoint
         async with httpx.AsyncClient() as client:
             export_payload = {
                 "content": content,
@@ -805,14 +713,11 @@ async def on_export_response_only_download_action(action: cl.Action):
                 "include_retrieved_docs": False,
                 "include_images_catalog": True
             }
-            
-            headers = {"X-User-Session": user_session_id} if user_session_id else {}
             _log.info(f"Content envoyé: {content}")
             
             response = await client.post(
                 f"{BACKEND_URL}/api/export/docx/direct",
                 json=export_payload,
-                headers=headers,
                 timeout=60.0
             )
             
@@ -840,8 +745,6 @@ async def on_export_response_only_download_action(action: cl.Action):
                 success_msg = f"📄 **Export terminé**\n\n"
                 success_msg += f"**Fichier:** {filename}\n"
                 success_msg += f"**Taille:** {len(file_content) / 1024:.1f} KB\n"
-                if user_session_id:
-                    success_msg += f"**Session:** {user_session_id}\n"
                 success_msg += f"**Téléchargement disponible ci-dessous**"
                 
                 download_msg = cl.Message(content=success_msg, elements=[file_element])
@@ -857,7 +760,7 @@ async def on_export_response_only_download_action(action: cl.Action):
 
 @cl.action_callback("export_complete_document")
 async def on_export_complete_document_action(action: cl.Action):
-    """Handle complete document export with user session support"""
+    """Handle complete document export"""
     try:
         content = action.payload.get("content", "")
         query = action.payload.get("query", "")
@@ -868,7 +771,6 @@ async def on_export_complete_document_action(action: cl.Action):
         dce_docs = action.payload.get("dce_docs", [])
         dce_scores = action.payload.get("dce_scores", [])
         dce_origins = action.payload.get("dce_origins", [])
-        user_session_id = action.payload.get("user_session_id")
         
         if not content:
             await cl.Message(content="❌ Aucun contenu à exporter.").send()
@@ -876,7 +778,7 @@ async def on_export_complete_document_action(action: cl.Action):
         
         export_status = await cl.Message(content="📑 **Export document complet en cours...**").send()
         
-        # Use the direct download endpoint with user session
+        # Utiliser l'endpoint de téléchargement direct
         async with httpx.AsyncClient() as client:
             export_payload = {
                 "content": content,
@@ -892,20 +794,17 @@ async def on_export_complete_document_action(action: cl.Action):
                 "include_images_catalog": True
             }
             
-            headers = {"X-User-Session": user_session_id} if user_session_id else {}
-            
             response = await client.post(
                 f"{BACKEND_URL}/api/export/docx/direct",
                 json=export_payload,
-                headers=headers,
                 timeout=120.0  # Timeout plus long pour export complet
             )
             
             if response.status_code == 200:
-                # Get binary file content
+                # Récupérer le fichier binaire
                 file_content = response.content
                 
-                # Extract filename from headers
+                # Extraire le nom du fichier depuis les headers
                 content_disposition = response.headers.get('content-disposition', '')
                 filename = "document_complet.docx"
                 if 'filename=' in content_disposition:
@@ -914,7 +813,7 @@ async def on_export_complete_document_action(action: cl.Action):
                 export_status.content = "✅ **Export complet réussi !** Téléchargement du document..."
                 await export_status.update()
                 
-                # Create download element for Chainlit
+                # Créer un élément de téléchargement pour Chainlit
                 file_element = cl.File(
                     content=file_content,
                     name=filename,
@@ -927,8 +826,6 @@ async def on_export_complete_document_action(action: cl.Action):
                 success_msg += f"**Taille:** {len(file_content) / 1024:.1f} KB\n"
                 success_msg += f"**Documents techniques:** {len(technical_docs)}\n"
                 success_msg += f"**Documents DCE:** {len(dce_docs)}\n"
-                if user_session_id:
-                    success_msg += f"**Session:** {user_session_id}\n"
                 success_msg += f"**Téléchargement disponible ci-dessous**"
                 
                 download_msg = cl.Message(content=success_msg, elements=[file_element])
@@ -944,6 +841,6 @@ async def on_export_complete_document_action(action: cl.Action):
 
 
 if __name__ == "__main__":
-    print("Starting Chainlit Frontend with User Support...")
+    print("Starting Chainlit Frontend ...")
     print(f"Backend URL: {BACKEND_URL}")
-    print(f"Images will be served from: {BACKEND_URL}/images/user_{{session_id}}/")
+    print(f"Images will be served from: {BACKEND_URL}/images/")
