@@ -19,7 +19,7 @@ import numpy as np
 from config.config import Config
 from core.embeddings import get_embedding_models
 from core.llm import initialize_llm
-from core.search import hybrid_search_with_threshold
+from core.dual_search import DualSearchService
 from utils.document_processing import format_docs
 from utils.export_docx import get_backend_docx_exporter
 from utils.blob_utils import BlobStorageManager
@@ -50,6 +50,7 @@ llm = None
 blob_manager = None
 image_manager = None
 backend_docx_exporter = None
+dual_search_service = None
 
 def convert_numpy_types(obj):
     """Convert numpy types to native Python types recursively with better error handling."""
@@ -97,7 +98,7 @@ def make_json_safe(obj):
 
 def initialize_models():
     """Initialize ML models and connect to external services"""
-    global embedding_models, llm, qdrant_client, blob_manager, image_manager, backend_docx_exporter
+    global embedding_models, llm, qdrant_client, blob_manager, image_manager, backend_docx_exporter, dual_search_service
     try:
         print("Connecting to external services and initializing models...")
         
@@ -125,6 +126,9 @@ def initialize_models():
         
         # Initialize backend DOCX exporter (no Chainlit dependency)
         backend_docx_exporter = get_backend_docx_exporter("exports")
+        
+        # Initialize dual search service
+        dual_search_service = DualSearchService(qdrant_client, embedding_models, image_manager)
         
         # Cleanup previous images on startup
         try:
@@ -453,163 +457,29 @@ async def start_ingestion(request: IngestionRequest, background_tasks: Backgroun
 @app.post("/api/dual-search", response_model=DualSearchResponse)
 async def dual_search_documents(request: DualSearchRequest):
     """Search documents in both technical and DCE collections with image processing"""
-    if not qdrant_client or not embedding_models:
-        raise HTTPException(status_code=503, detail="Services not ready")
+    if not dual_search_service:
+        raise HTTPException(status_code=503, detail="Dual search service not ready")
     
     try:
-        # Use config values if not provided
-        technical_collection = request.technical_collection or Config.COLLECTION_NAME
-        dce_collection = request.dce_collection or Config.DCE_COLLECTION
+        # Perform dual search using the service
+        search_results = await dual_search_service.dual_search(
+            query=request.query,
+            technical_collection=request.technical_collection,
+            dce_collection=request.dce_collection,
+            threshold=request.threshold,
+            max_results=request.max_results,
+            use_reranker=request.use_reranker,
+            process_images=True  # Always process images
+        )
         
-        # Initialize results
-        technical_results = None
-        dce_results = None
-        
-        # Search in technical collection
-        try:
-            tech_search_results = await hybrid_search_with_threshold(
-                query=request.query,
-                client=qdrant_client,
-                models_dict=embedding_models,
-                collection_name=technical_collection,
-                threshold=request.threshold,
-                max_results=request.max_results,
-                use_reranker=request.use_reranker
-            )
-            
-            if tech_search_results:
-                tech_docs, tech_scores, tech_origins = tech_search_results[:3]
-                tech_original_ranks = tech_search_results[3] if len(tech_search_results) > 3 else None
-                tech_original_scores = tech_search_results[4] if len(tech_search_results) > 4 else None
-                tech_reranked = tech_search_results[5] if len(tech_search_results) > 5 else False
-                
-                # Convert documents to serializable format
-                serialized_tech_docs = []
-                for doc in tech_docs:
-                    serialized_tech_docs.append({
-                        "page_content": doc.page_content,
-                        "metadata": doc.metadata
-                    })
-                
-                technical_results = SearchResponse(
-                    documents=serialized_tech_docs,
-                    scores=convert_numpy_types(tech_scores),
-                    origins=convert_numpy_types(tech_origins),
-                    original_ranks=convert_numpy_types(tech_original_ranks) if tech_original_ranks else None,
-                    original_scores=convert_numpy_types(tech_original_scores) if tech_original_scores else None,
-                    reranked=tech_reranked,
-                    total_results=len(tech_docs),
-                    collection_name=technical_collection
-                )
-        except Exception as e:
-            print(f"Technical collection search error: {e}")
-            technical_results = SearchResponse(
-                documents=[], scores=[], origins=[], total_results=0, 
-                collection_name=technical_collection, reranked=False
-            )
-        
-        # Search in DCE collection
-        try:
-            dce_search_results = await hybrid_search_with_threshold(
-                query=request.query,
-                client=qdrant_client,
-                models_dict=embedding_models,
-                collection_name=dce_collection,
-                threshold=request.threshold,
-                max_results=request.max_results,
-                use_reranker=request.use_reranker
-            )
-            
-            if dce_search_results:
-                dce_docs, dce_scores, dce_origins = dce_search_results[:3]
-                dce_original_ranks = dce_search_results[3] if len(dce_search_results) > 3 else None
-                dce_original_scores = dce_search_results[4] if len(dce_search_results) > 4 else None
-                dce_reranked = dce_search_results[5] if len(dce_search_results) > 5 else False
-                
-                # Convert documents to serializable format
-                serialized_dce_docs = []
-                for doc in dce_docs:
-                    serialized_dce_docs.append({
-                        "page_content": doc.page_content,
-                        "metadata": doc.metadata
-                    })
-                
-                dce_results = SearchResponse(
-                    documents=serialized_dce_docs,
-                    scores=convert_numpy_types(dce_scores),
-                    origins=convert_numpy_types(dce_origins),
-                    original_ranks=convert_numpy_types(dce_original_ranks) if dce_original_ranks else None,
-                    original_scores=convert_numpy_types(dce_original_scores) if dce_original_scores else None,
-                    reranked=dce_reranked,
-                    total_results=len(dce_docs),
-                    collection_name=dce_collection
-                )
-        except Exception as e:
-            print(f"DCE collection search error: {e}")
-            dce_results = SearchResponse(
-                documents=[], scores=[], origins=[], total_results=0,
-                collection_name=dce_collection, reranked=False
-            )
-        
-        # Process images in chunks if we have results
-        all_docs_for_processing = []
-        if technical_results and technical_results.documents:
-            # Convert back to Document objects for image processing
-            from langchain_core.documents import Document as LCDocument
-            tech_docs_for_processing = [
-                LCDocument(page_content=doc["page_content"], metadata=doc["metadata"])
-                for doc in technical_results.documents
-            ]
-            all_docs_for_processing.extend(tech_docs_for_processing)
-        
-        if dce_results and dce_results.documents:
-            from langchain_core.documents import Document as LCDocument
-            dce_docs_for_processing = [
-                LCDocument(page_content=doc["page_content"], metadata=doc["metadata"])
-                for doc in dce_results.documents
-            ]
-            all_docs_for_processing.extend(dce_docs_for_processing)
-        
-        # Process images if we have documents
-        if all_docs_for_processing and image_manager:
-            try:
-                processed_chunks = process_chunks_with_images(all_docs_for_processing)
-                
-                # Update the results with processed chunks
-                num_technical = len(technical_results.documents) if technical_results else 0
-                if num_technical > 0 and technical_results:
-                    processed_tech_docs = processed_chunks[:num_technical]
-                    technical_results.documents = [
-                        {
-                            "page_content": doc.page_content,
-                            "metadata": doc.metadata
-                        } for doc in processed_tech_docs
-                    ]
-                
-                if len(processed_chunks) > num_technical and dce_results:
-                    processed_dce_docs = processed_chunks[num_technical:]
-                    dce_results.documents = [
-                        {
-                            "page_content": doc.page_content,
-                            "metadata": doc.metadata
-                        } for doc in processed_dce_docs
-                    ]
-            except Exception as e:
-                print(f"Image processing error: {e}")
-        
-        total_documents = (technical_results.total_results if technical_results else 0) + \
-                         (dce_results.total_results if dce_results else 0)
+        # Convert service results to API response format
+        technical_results = SearchResponse(**search_results['technical_results'])
+        dce_results = SearchResponse(**search_results['dce_results'])
         
         return DualSearchResponse(
-            technical_results=technical_results or SearchResponse(
-                documents=[], scores=[], origins=[], total_results=0,
-                collection_name=technical_collection, reranked=False
-            ),
-            dce_results=dce_results or SearchResponse(
-                documents=[], scores=[], origins=[], total_results=0,
-                collection_name=dce_collection, reranked=False
-            ),
-            total_documents=total_documents
+            technical_results=technical_results,
+            dce_results=dce_results,
+            total_documents=search_results['total_documents']
         )
     
     except Exception as e:
@@ -875,82 +745,6 @@ async def export_docx_direct_download(request: ExportRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export error: {str(e)}")
 
-@app.get("/api/export/docx/list")
-async def list_docx_exports():
-    """List available DOCX exports"""
-    if not backend_docx_exporter:
-        raise HTTPException(status_code=503, detail="DOCX exporter not ready")
-    
-    try:
-        files = backend_docx_exporter.get_available_files()
-        return {
-            "success": True,
-            "files": files,
-            "total_count": len(files)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"List files error: {str(e)}")
-
-@app.get("/api/export/docx/download/{filename}")
-async def download_docx_file(filename: str):
-    """Download a specific DOCX file"""
-    if not backend_docx_exporter:
-        raise HTTPException(status_code=503, detail="DOCX exporter not ready")
-    
-    try:
-        files = backend_docx_exporter.get_available_files()
-        file_info = next((f for f in files if f["filename"] == filename), None)
-        
-        if not file_info:
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        file_path = file_info["file_path"]
-        
-        return FileResponse(
-            path=file_path,
-            filename=filename,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
-
-@app.delete("/api/export/docx/{filename}")
-async def delete_docx_file(filename: str):
-    """Delete a specific DOCX file"""
-    if not backend_docx_exporter:
-        raise HTTPException(status_code=503, detail="DOCX exporter not ready")
-    
-    try:
-        success = backend_docx_exporter.delete_file(filename)
-        if success:
-            return {
-                "success": True,
-                "message": f"File {filename} deleted successfully"
-            }
-        else:
-            raise HTTPException(status_code=404, detail="File not found or could not be deleted")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")
-
-@app.post("/api/export/docx/cleanup")
-async def cleanup_docx_files():
-    """Cleanup old DOCX files, keeping only the latest 10"""
-    if not backend_docx_exporter:
-        raise HTTPException(status_code=503, detail="DOCX exporter not ready")
-    
-    try:
-        deleted_count = backend_docx_exporter.cleanup_old_files(keep_latest=10)
-        return {
-            "success": True,
-            "message": f"Cleaned up {deleted_count} old files",
-            "deleted_count": deleted_count
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")
 
 @app.post("/api/blob/export")
 async def export_to_blob(request: BlobExportRequest):
