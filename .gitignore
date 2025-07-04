@@ -1,0 +1,4 @@
+.env
+finetuned_models*
+*__pycache__*
+*b_favicon.ico

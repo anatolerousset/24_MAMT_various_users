@@ -1,0 +1,62 @@
+# Backend Dockerfile - CPU Only version
+FROM python:3.11-slim
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    wget \
+    pandoc \
+    && rm -rf /var/lib/apt/lists/*
+
+    RUN apt-get update && \
+    apt-get install -y pandoc && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements-backend.txt .
+RUN pip install --no-cache-dir torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+RUN pip install --no-cache-dir -r requirements-backend.txt
+
+# Copy backend-specific files
+COPY config/ ./config/
+COPY core/ ./core/
+COPY ingestion/ ./ingestion/
+COPY parser_and_chunker/ ./parser_and_chunker/
+COPY utils/ ./utils/
+COPY main_ingestion.py ./
+COPY templates/ ./templates/
+
+# Copy and create finetuned_models directory
+COPY finetuned_models/ ./finetuned_models/
+
+# Copy FastAPI backend server
+COPY backend_server.py ./
+
+# Create directories
+RUN mkdir -p temp public exports
+
+# Expose ports
+EXPOSE 8001 6333
+
+# Start script
+COPY start_backend.sh ./
+RUN chmod +x start_backend.sh
+
+CMD ["./start_backend.sh"]

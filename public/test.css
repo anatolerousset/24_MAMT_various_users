@@ -1,0 +1,9 @@
+a[href*='https://chainlit.io'] {
+    visibility: hidden;
+}
+.cl-container, 
+.cl-main, 
+.cl-chat-container,
+.cl-chat-container > div {
+    max-width: 1200px !important;
+}

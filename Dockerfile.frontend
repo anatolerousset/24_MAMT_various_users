@@ -1,0 +1,43 @@
+# Frontend Dockerfile - Streamlit + Chainlit + FastAPI
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    pandoc \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements-frontend.txt .
+RUN pip install --no-cache-dir -r requirements-frontend.txt
+
+# Copy frontend-specific files
+COPY config/ ./config/
+COPY utils/ ./utils/
+COPY handlers/ ./handlers/
+COPY core/templates.py ./core/templates.py
+COPY streamlit_ingestion.py ./
+COPY chainlit.md ./
+COPY .chainlit/ ./.chainlit/
+COPY public/ ./public/
+COPY temp/ ./temp/
+COPY chainlit_frontend.py ./
+
+# Copy FastAPI frontend server
+COPY frontend_server.py ./
+
+# Create directories
+RUN mkdir -p public temp data
+
+# Expose ports
+EXPOSE 8000 8501 8002
+
+# Start script
+COPY start_frontend.sh ./
+RUN chmod +x start_frontend.sh
+
+CMD ["./start_frontend.sh"]

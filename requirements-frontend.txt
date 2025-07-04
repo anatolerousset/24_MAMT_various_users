@@ -1,0 +1,31 @@
+# Frontend requirements - Streamlit + Chainlit + FastAPI
+fastapi==0.115.11
+uvicorn[standard]==0.25.0
+streamlit==1.45.1
+chainlit==2.4.400
+
+# HTTP clients
+httpx==0.28.1
+requests==2.32.3
+
+# Azure
+azure-storage-blob==12.25.1
+azure-core==1.32.0
+
+# Data processing
+pandas==2.2.3
+python-multipart==0.0.18
+
+# Environment
+python-dotenv==1.0.1
+
+# Document processing (minimal for frontend)
+python-docx==1.1.2
+openpyxl==3.1.5
+Pillow==11.0.0
+
+# Utilities
+tqdm==4.67.1
+pathlib2==2.3.7
+
+sse-starlette==2.1.3
