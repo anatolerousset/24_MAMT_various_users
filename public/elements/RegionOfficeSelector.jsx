@@ -135,23 +135,23 @@ export default function RegionOfficeSelector() {
 
           {/* Collections Info - Horizontal */}
           {isSelectionComplete && (
-            <div className="flex flex-col sm:flex-row gap-4">
-              <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <div className="flex items-center gap-2 text-blue-800">
+            <div className="flex flex-col sm:flex-row gap-4 mt-2 mb-2">
+              <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-center gap-2 text-blue-800 mb-2">
                   <Database className="h-4 w-4" />
                   <span className="text-sm font-medium">Collection technique:</span>
                 </div>
-                <p className="text-sm text-blue-700 mt-1 font-mono break-all">
+                <p className="text-sm text-blue-700 font-mono break-all">
                   {currentTechnicalCollection}
                 </p>
               </div>
               
-              <div className="flex-1 bg-green-50 border border-green-200 rounded-lg p-3">
-                <div className="flex items-center gap-2 text-green-800">
+              <div className="flex-1 bg-green-50 border border-green-200 rounded-lg p-4">
+                <div className="flex items-center gap-2 text-green-800 mb-2">
                   <Database className="h-4 w-4" />
                   <span className="text-sm font-medium">Collection DCE:</span>
                 </div>
-                <p className="text-sm text-green-700 mt-1 font-mono break-all">
+                <p className="text-sm text-green-700 font-mono break-all">
                   {currentDceCollection}
                 </p>
               </div>

@@ -242,10 +242,10 @@ async def on_chat_start():
                     collections = config_data.get("collections", {})
                     llm_info = config_data.get("llm", {})
                     
-                    welcome_msg += f"**Collections disponibles:**\n"
-                    welcome_msg += f"- Technique: `{collections.get('technical', 'N/A')}`\n"
-                    welcome_msg += f"- DCE: `{collections.get('dce', 'N/A')}`\n\n"
-                    welcome_msg += f"**LLM actif:** {llm_info.get('provider', 'N/A')}\n\n"
+                    #welcome_msg += f"**Collections disponibles:**\n"
+                    #welcome_msg += f"- Technique: `{collections.get('technical', 'N/A')}`\n"
+                    #welcome_msg += f"- DCE: `{collections.get('dce', 'N/A')}`\n\n"
+                    #welcome_msg += f"**LLM actif:** {llm_info.get('provider', 'N/A')}\n\n"
                     
                 else:
                     welcome_msg = "🟡 **Système en cours d'initialisation**\n\nLe système démarre, veuillez patienter quelques instants."
@@ -277,7 +277,7 @@ async def on_chat_start():
     # Create and send region selector
     region_selector = await create_region_office_selector_element()
     await cl.Message(
-        content="🗺️ **Sélection de région**\n\nVeuillez d'abord sélectionner la région pour configurer la collection technique appropriée:",
+        content="",#"🗺️ **Sélection de région**\n\nVeuillez d'abord sélectionner la région pour configurer la collection technique appropriée:",
         elements=[region_selector]
     ).send()
     
