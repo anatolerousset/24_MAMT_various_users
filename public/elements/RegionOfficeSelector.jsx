@@ -65,9 +65,9 @@ export default function RegionOfficeSelector() {
   const isSelectionComplete = selectedRegion && selectedOffice;
 
   return (
-    <Card className="w-full max-w-lg mx-auto">
+    <Card className="w-full max-w-4xl mx-auto">
       <CardContent className="p-6">
-        <div className="space-y-4">
+        <div className="space-y-6">
           {/* Header */}
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1">
@@ -84,71 +84,74 @@ export default function RegionOfficeSelector() {
             Choisissez la région (mémoires techniques) et le bureau (DCE) pour configurer les collections appropriées
           </p>
           
-          {/* Region Selector */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-              <MapPin className="h-4 w-4 text-blue-600" />
-              Région (Collection Technique):
-            </label>
-            <Select value={selectedRegion} onValueChange={handleRegionChange}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Sélectionnez une région..." />
-              </SelectTrigger>
-              <SelectContent>
-                {availableRegions.map((region) => (
-                  <SelectItem key={region} value={region}>
-                    <div className="flex items-center gap-2">
-                      <MapPin className="h-4 w-4" />
-                      {region}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          {/* Horizontal Selectors */}
+          <div className="flex gap-6" style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+            {/* Region Selector - Left */}
+            <div className="flex-1 space-y-2" style={{ minWidth: '250px' }}>
+              <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-blue-600" />
+                Région (Collection Technique):
+              </label>
+              <Select value={selectedRegion} onValueChange={handleRegionChange}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Sélectionnez une région..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableRegions.map((region) => (
+                    <SelectItem key={region} value={region}>
+                      <div className="flex items-center gap-2">
+                        <MapPin className="h-4 w-4" />
+                        {region}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Office Selector - Right */}
+            <div className="flex-1 space-y-2" style={{ minWidth: '250px' }}>
+              <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <Building2 className="h-4 w-4 text-green-600" />
+                Bureau (Collection DCE):
+              </label>
+              <Select value={selectedOffice} onValueChange={handleOfficeChange}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Sélectionnez un bureau..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableOffices.map((office) => (
+                    <SelectItem key={office} value={office}>
+                      <div className="flex items-center gap-2">
+                        <Building2 className="h-4 w-4" />
+                        {office}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
-          {/* Office Selector */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-              <Building2 className="h-4 w-4 text-green-600" />
-              Bureau (Collection DCE):
-            </label>
-            <Select value={selectedOffice} onValueChange={handleOfficeChange}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Sélectionnez un bureau..." />
-              </SelectTrigger>
-              <SelectContent>
-                {availableOffices.map((office) => (
-                  <SelectItem key={office} value={office}>
-                    <div className="flex items-center gap-2">
-                      <Building2 className="h-4 w-4" />
-                      {office}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Collections Info */}
+          {/* Collections Info - Horizontal */}
           {isSelectionComplete && (
-            <div className="space-y-3">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg p-3">
                 <div className="flex items-center gap-2 text-blue-800">
                   <Database className="h-4 w-4" />
                   <span className="text-sm font-medium">Collection technique:</span>
                 </div>
-                <p className="text-sm text-blue-700 mt-1 font-mono">
+                <p className="text-sm text-blue-700 mt-1 font-mono break-all">
                   {currentTechnicalCollection}
                 </p>
               </div>
               
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+              <div className="flex-1 bg-green-50 border border-green-200 rounded-lg p-3">
                 <div className="flex items-center gap-2 text-green-800">
                   <Database className="h-4 w-4" />
                   <span className="text-sm font-medium">Collection DCE:</span>
                 </div>
-                <p className="text-sm text-green-700 mt-1 font-mono">
+                <p className="text-sm text-green-700 mt-1 font-mono break-all">
                   {currentDceCollection}
                 </p>
               </div>
@@ -171,38 +174,42 @@ export default function RegionOfficeSelector() {
           )}
 
           {/* Confirm Button */}
-          <Button 
-            onClick={handleConfirmSelection}
-            disabled={!isSelectionComplete || isUpdating}
-            className="w-full"
-            variant={isSelectionComplete ? "default" : "secondary"}
-          >
-            {isUpdating ? (
-              <div className="flex items-center gap-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                Mise à jour...
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Check className="h-4 w-4" />
-                Confirmer la sélection
-              </div>
-            )}
-          </Button>
+          <div className="flex justify-center">
+            <Button 
+              onClick={handleConfirmSelection}
+              disabled={!isSelectionComplete || isUpdating}
+              className="w-full max-w-md"
+              variant={isSelectionComplete ? "default" : "secondary"}
+            >
+              {isUpdating ? (
+                <div className="flex items-center gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  Mise à jour...
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Check className="h-4 w-4" />
+                  Confirmer la sélection
+                </div>
+              )}
+            </Button>
+          </div>
 
           {/* Current Status */}
           {(props.selected_region || props.selected_office) && (
             <div className="text-center space-y-1">
-              {props.selected_region && (
-                <p className="text-xs text-gray-500">
-                  Région actuelle: <span className="font-semibold text-blue-700">{props.selected_region}</span>
-                </p>
-              )}
-              {props.selected_office && (
-                <p className="text-xs text-gray-500">
-                  Bureau actuel: <span className="font-semibold text-green-700">{props.selected_office}</span>
-                </p>
-              )}
+              <div className="flex flex-wrap justify-center gap-4">
+                {props.selected_region && (
+                  <p className="text-xs text-gray-500">
+                    Région actuelle: <span className="font-semibold text-blue-700">{props.selected_region}</span>
+                  </p>
+                )}
+                {props.selected_office && (
+                  <p className="text-xs text-gray-500">
+                    Bureau actuel: <span className="font-semibold text-green-700">{props.selected_office}</span>
+                  </p>
+                )}
+              </div>
               {props.last_updated && (
                 <p className="text-xs text-gray-400">
                   Dernière mise à jour: {new Date(props.last_updated).toLocaleString('fr-FR')}
