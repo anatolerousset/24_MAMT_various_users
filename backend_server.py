@@ -238,6 +238,7 @@ class ChatResponse(BaseModel):
 class IngestionRequest(BaseModel):
     data_type: str
     region_name: Optional[str] = None
+    office_name: Optional[str] = None  # NEW: Added office_name field
     collection_name: Optional[str] = None
     recreate_collection: bool = False
     remove_duplicates: bool = False
@@ -428,7 +429,7 @@ async def health_check():
 @app.post("/api/ingestion")
 async def start_ingestion(request: IngestionRequest, background_tasks: BackgroundTasks):
     """
-    SIMPLIFIED: Basic ingestion endpoint using main_ingestion.py without progress tracking
+    UPDATED: Basic ingestion endpoint using main_ingestion.py with office support
     """
     try:
         # Run ingestion in background using main_ingestion.py
@@ -436,6 +437,7 @@ async def start_ingestion(request: IngestionRequest, background_tasks: Backgroun
             run_ingestion_async,
             data_type=request.data_type,
             region_name=request.region_name,
+            office_name=request.office_name,  # NEW: Pass office_name to ingestion
             collection_name=request.collection_name,
             recreate_collection=request.recreate_collection,
             remove_duplicates=request.remove_duplicates,
@@ -443,11 +445,23 @@ async def start_ingestion(request: IngestionRequest, background_tasks: Backgroun
             archive_processed_files=request.archive_processed_files
         )
         
+        # Build response message with office information
+        message_parts = [f"Ingestion démarrée en arrière-plan pour {request.data_type}"]
+        
+        if request.region_name:
+            message_parts.append(f"région: {request.region_name}")
+        
+        if request.office_name:
+            message_parts.append(f"bureau: {request.office_name}")  # NEW: Include office in response
+        
+        response_message = " - ".join(message_parts)
+        
         return {
             "success": True,
-            "message": "Ingestion démarrée en arrière-plan",
+            "message": response_message,
             "data_type": request.data_type,
             "region_name": request.region_name,
+            "office_name": request.office_name,  # NEW: Include office_name in response
             "collection_name": request.collection_name
         }
     

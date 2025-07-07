@@ -40,7 +40,7 @@ async def start_basic_ingestion(ingestion_params: dict):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def display_launch_section(uploaded_files, validation_errors, data_type, region_name, 
+def display_launch_section(uploaded_files, validation_errors, data_type, region_name, office_name,
                                    recreate_collection, remove_duplicates, archive_processed_files):
     """Launch section with basic loading"""
     
@@ -81,10 +81,10 @@ def display_launch_section(uploaded_files, validation_errors, data_type, region_
     
     # If ingestion is in progress, run the actual ingestion process
     if st.session_state.ingestion_in_progress:
-        run_ingestion_process(uploaded_files, data_type, region_name, 
+        run_ingestion_process(uploaded_files, data_type, region_name, office_name,
                              recreate_collection, remove_duplicates, archive_processed_files)
 
-def run_ingestion_process(uploaded_files, data_type, region_name, 
+def run_ingestion_process(uploaded_files, data_type, region_name, office_name,
                          recreate_collection, remove_duplicates, archive_processed_files):
     """Separate function to handle the actual ingestion process"""
     try:
@@ -106,12 +106,17 @@ def run_ingestion_process(uploaded_files, data_type, region_name,
             'archive_processed_files': archive_processed_files
         }
         
-        # Determine collection name
-        if data_type == "dce":
+        # Determine collection name based on data type and selections
+        if data_type == "dce" and office_name:
+            final_collection_name = f"dce_{office_name.lower()}_documents"
+            ingestion_params['office_name'] = office_name  # Add office_name to params
+        elif data_type == "dce":
             final_collection_name = "dce_documents"
         elif data_type == "region" and region_name:
-            final_collection_name = f"region_{region_name}_documents"
+            final_collection_name = f"region_{region_name.lower()}_documents"
             ingestion_params['region_name'] = region_name
+        else:
+            final_collection_name = f"{data_type}_documents"
         
         ingestion_params['collection_name'] = final_collection_name
         
@@ -185,33 +190,6 @@ def run_ingestion_process(uploaded_files, data_type, region_name,
         # Reset ingestion status on any error
         st.session_state.ingestion_in_progress = False
         st.error(f"❌ Erreur lors du démarrage de l'ingestion: {str(e)}")
-
-
-# Helper functions
-import json
-import os
-from typing import List
-
-def load_regions_from_env() -> List[str]:
-    """Load available regions from environment variables"""
-    try:
-        regions_str = os.getenv('AVAILABLE_REGIONS', '')
-        if regions_str:
-            try:
-                regions = json.loads(regions_str)
-                if isinstance(regions, list):
-                    return [str(region).strip() for region in regions if region]
-            except json.JSONDecodeError:
-                # Fallback: manual parsing for malformed JSON
-                regions_str = regions_str.strip('[]"\'')
-                regions = [region.strip().strip('"\'') for region in regions_str.split(',')]
-                return [region for region in regions if region]
-       
-        return regions if regions else ["PACA", "LR"]
-       
-    except Exception as e:
-        st.warning(f"Error loading regions: {e}. Using default values.")
-        return ["PACA", "LR"]
 
 def get_allowed_file_types(data_type: str) -> tuple:
     """Return allowed file types based on data type"""
@@ -317,7 +295,7 @@ def display_validation_errors(errors: List[str]) -> None:
     st.markdown(error_html, unsafe_allow_html=True)
 
 def display_sidebar_config():
-    """Display configuration in sidebar with consistent styling"""
+    """Display configuration in sidebar with consistent styling - UPDATED with office selection"""
     with st.sidebar:
         st.markdown('<div class="section-header">⚙️ Configuration</div>', unsafe_allow_html=True)
         
@@ -348,12 +326,14 @@ def display_sidebar_config():
             label_visibility="collapsed"
         )
         
-        # Region section
+        # Region/Office selection based on data type
         region_name = None
+        office_name = None
+        
         if data_type == "region":
-            st.markdown("**🌍 Sélection de la Region**")
+            st.markdown("**🌍 Sélection de la Région**")
             
-            available_regions = load_regions_from_env()
+            available_regions = Config.load_available_regions()
             
             if available_regions:
                 region_name = st.selectbox(
@@ -367,6 +347,24 @@ def display_sidebar_config():
                     region_name = region_name.lower().strip()
             else:
                 st.error("❌ Aucune région disponible. Vérifiez la configuration des variables d'environnement.")
+        
+        elif data_type == "dce":
+            st.markdown("**🏢 Sélection du Bureau**")
+            
+            available_offices = Config.load_available_offices()
+            
+            if available_offices:
+                office_name = st.selectbox(
+                    "Office",
+                    options=available_offices,
+                    help="Sélectionnez le bureau pour le DCE",
+                    label_visibility="collapsed"
+                )
+                
+                if office_name:
+                    office_name = office_name.lower().strip()
+            else:
+                st.error("❌ Aucun bureau disponible. Vérifiez la configuration des variables d'environnement.")
         
         st.divider()
         
@@ -401,7 +399,7 @@ def display_sidebar_config():
         remove_duplicates = True
         archive_processed_files = default_archive
         
-        return data_type, region_name, recreate_collection, remove_duplicates, archive_processed_files
+        return data_type, region_name, office_name, recreate_collection, remove_duplicates, archive_processed_files
 
 def display_upload_section(data_type: str):
     """Display upload section with consistent styling"""
@@ -425,7 +423,7 @@ def display_upload_section(data_type: str):
     return uploaded_files
 
 def main():
-    """Simplified main interface"""
+    """Simplified main interface - UPDATED to handle office selection"""
     
     # Add navigation button
     add_navigation_button()
@@ -433,8 +431,8 @@ def main():
     # Main header
     st.markdown('<h1 class="main-header">📁 Interface d\'ingestion des documents</h1>', unsafe_allow_html=True)
     
-    # Configuration from sidebar
-    data_type, region_name, recreate_collection, remove_duplicates, archive_processed_files = display_sidebar_config()
+    # Configuration from sidebar - now returns office_name as well
+    data_type, region_name, office_name, recreate_collection, remove_duplicates, archive_processed_files = display_sidebar_config()
     
     # Upload section with conditional file types
     uploaded_files = display_upload_section(data_type)
@@ -452,12 +450,15 @@ def main():
     if data_type == "region" and not region_name:
         validation_errors.append("Une région doit être sélectionnée pour le type 'region'")
     
+    if data_type == "dce" and not office_name:
+        validation_errors.append("Un bureau doit être sélectionné pour le type 'dce'")
+    
     # Display validation errors
     display_validation_errors(validation_errors)
     
-    # Launch section - use the correct function name
+    # Launch section - updated to pass office_name
     display_launch_section(
-        uploaded_files, validation_errors, data_type, region_name,
+        uploaded_files, validation_errors, data_type, region_name, office_name,
         recreate_collection, remove_duplicates, archive_processed_files
     )
     
@@ -469,7 +470,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS styles
+# CSS styles (unchanged)
 st.markdown("""
 <style>
     :root {

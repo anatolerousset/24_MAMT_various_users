@@ -1,5 +1,5 @@
 """
-Ingestion pipeline with file deletion for non-archived files
+Ingestion pipeline with file deletion for non-archived files - UPDATED with office support
 """
 
 import logging
@@ -22,6 +22,7 @@ logging.getLogger('azure.core.pipeline.policies.http_logging_policy').disabled =
 async def main_ingestion_pipeline_with_progress(
     data_type: str = 'dce', 
     region_name: Optional[str] = None,
+    office_name: Optional[str] = None,  # NEW: Added office_name parameter
     collection_name: str = None,
     recreate_collection: bool = False,
     remove_duplicates: bool = False,
@@ -30,11 +31,12 @@ async def main_ingestion_pipeline_with_progress(
     progress_callback: Callable = None
 ):
     """
-    Main ingestion pipeline with file deletion for non-archived files
+    Main ingestion pipeline with file deletion for non-archived files - UPDATED with office support
     
     Args:
         data_type: Type of data ('dce' or 'region')
         region_name: Region name for regional processing
+        office_name: Office name for DCE processing (NEW)
         collection_name: Qdrant collection name
         recreate_collection: Whether to recreate the collection
         remove_duplicates: Whether to remove duplicates after ingestion
@@ -61,11 +63,13 @@ async def main_ingestion_pipeline_with_progress(
     processor = DocumentProcessor(progress_callback=progress_callback)
     vector_manager = VectorStoreManager()
     
-    # Set collection name
+    # Set collection name using the new Config method that supports office_name
     if collection_name is None:
-        collection_name = f"{data_type}_collection"
-        if region_name:
-            collection_name = f"{data_type}_{region_name}_collection"
+        collection_name = Config.get_collection_name_for_data_type(
+            data_type, 
+            region_name, 
+            office_name  # NEW: Pass office_name to collection name generation
+        )
     
     # Set archiving behavior based on data type if not explicitly provided
     if archive_processed_files is None:
@@ -78,6 +82,10 @@ async def main_ingestion_pipeline_with_progress(
         log_message=f"Starting ingestion pipeline for {data_type}"
     )
     progress_callback(log_message=f"Collection: {collection_name}")
+    if region_name:
+        progress_callback(log_message=f"Region: {region_name}")
+    if office_name:
+        progress_callback(log_message=f"Office: {office_name}")  # NEW: Log office name
     progress_callback(log_message=f"Archive after processing: {archive_processed_files}")
     
     # Track processed files
@@ -172,10 +180,15 @@ async def main_ingestion_pipeline_with_progress(
         )
         
         # Process the documents and get results from DocumentProcessor
+        # Pass office_name for DCE processing or region_name for region processing
+        processing_region = region_name if data_type == 'region' else None
+        processing_office = office_name if data_type == 'dce' else None
+        
         chunks, texts = await processor.process_files_from_blob_with_progress(
             blob_names=blob_names,
             data_type=data_type,
-            region_name=region_name,
+            region_name=processing_region,  # For regions
+            office_name=processing_office,  # NEW: For DCE offices
             input_container=Config.INPUT_CONTAINER
         )
         
@@ -463,6 +476,9 @@ async def main_ingestion_pipeline_with_progress(
         progress_callback(
             log_message=f"  • Chunks generated: {len(chunks)}"
         )
+        progress_callback(
+            log_message=f"  • Target collection: {collection_name}"
+        )
         
         # File management summary
         if archive_processed_files:
@@ -547,6 +563,7 @@ async def main_ingestion_pipeline_with_progress(
 # Wrapper function for backward compatibility with async handling
 def main_ingestion_pipeline(data_type: str = 'dce', 
                            region_name: Optional[str] = None,
+                           office_name: Optional[str] = None,  # NEW: Added office_name parameter
                            collection_name: str = None,
                            recreate_collection: bool = False,
                            remove_duplicates: bool = False,
@@ -559,6 +576,7 @@ def main_ingestion_pipeline(data_type: str = 'dce',
     return asyncio.run(main_ingestion_pipeline_with_progress(
         data_type=data_type,
         region_name=region_name,
+        office_name=office_name,  # NEW: Pass office_name
         collection_name=collection_name,
         recreate_collection=recreate_collection,
         remove_duplicates=remove_duplicates,
@@ -568,10 +586,36 @@ def main_ingestion_pipeline(data_type: str = 'dce',
     ))
 
 
-# Debug function to check file management status
-def debug_file_management_status(data_type: str = 'dce'):
+# Async function for use in async contexts
+async def run_ingestion_async(data_type: str = 'dce', 
+                             region_name: Optional[str] = None,
+                             office_name: Optional[str] = None,  # NEW: Added office_name parameter
+                             collection_name: str = None,
+                             recreate_collection: bool = False,
+                             remove_duplicates: bool = False,
+                             file_patterns: List[str] = None,
+                             archive_processed_files: bool = None,
+                             progress_callback: Callable = None):
     """
-    Debug function to check the status of file management operations
+    Async version of the ingestion pipeline for use in async contexts.
+    """
+    return await main_ingestion_pipeline_with_progress(
+        data_type=data_type,
+        region_name=region_name,
+        office_name=office_name,  # NEW: Pass office_name
+        collection_name=collection_name,
+        recreate_collection=recreate_collection,
+        remove_duplicates=remove_duplicates,
+        file_patterns=file_patterns,
+        archive_processed_files=archive_processed_files,
+        progress_callback=progress_callback
+    )
+
+
+# Debug function to check file management status
+def debug_file_management_status(data_type: str = 'dce', office_name: str = None):
+    """
+    Debug function to check the status of file management operations - UPDATED with office support
     """
     _log.info("🔍 DEBUG: Checking file management status...")
     
@@ -596,41 +640,22 @@ def debug_file_management_status(data_type: str = 'dce'):
     should_archive = Config.should_archive_data_type(data_type)
     _log.info(f"Data type '{data_type}' archiving behavior: {'ARCHIVE' if should_archive else 'DELETE'}")
     
+    # Show what collection would be used
+    collection_name = Config.get_collection_name_for_data_type(data_type, office_name=office_name)
+    _log.info(f"Target collection would be: {collection_name}")
+    
     return {
         "input_files_count": len(input_files),
         "archive_files_count": len(archive_files) if 'archive_files' in locals() else 0,
         "input_files": [f['name'] for f in input_files],
         "archive_files": [f['name'] for f in archive_files] if 'archive_files' in locals() else [],
-        "data_type_should_archive": should_archive
+        "data_type_should_archive": should_archive,
+        "target_collection": collection_name
     }
 
 
-# Async function for use in async contexts
-async def run_ingestion_async(data_type: str = 'dce', 
-                             region_name: Optional[str] = None,
-                             collection_name: str = None,
-                             recreate_collection: bool = False,
-                             remove_duplicates: bool = False,
-                             file_patterns: List[str] = None,
-                             archive_processed_files: bool = None,
-                             progress_callback: Callable = None):
-    """
-    Async version of the ingestion pipeline for use in async contexts.
-    """
-    return await main_ingestion_pipeline_with_progress(
-        data_type=data_type,
-        region_name=region_name,
-        collection_name=collection_name,
-        recreate_collection=recreate_collection,
-        remove_duplicates=remove_duplicates,
-        file_patterns=file_patterns,
-        archive_processed_files=archive_processed_files,
-        progress_callback=progress_callback
-    )
-
-
 if __name__ == "__main__":
-    # Example usage with file management
+    # Example usage with office support
     
     def example_progress_callback(**kwargs):
         """Example progress callback that demonstrates all available fields"""
@@ -641,17 +666,18 @@ if __name__ == "__main__":
     print("=" * 80)
     print("DEBUGGING CURRENT FILE MANAGEMENT STATUS")
     print("=" * 80)
-    debug_status = debug_file_management_status('dce')
+    debug_status = debug_file_management_status('dce', 'CSP')  # NEW: Test with office
     print(f"Debug results: {debug_status}")
     
     print("\n" + "=" * 80)
-    print("STARTING DCE INGESTION (FILES WILL BE DELETED, NOT ARCHIVED)")
+    print("STARTING DCE INGESTION WITH OFFICE SELECTION (FILES WILL BE DELETED, NOT ARCHIVED)")
     print("=" * 80)
     
-    # Example: Run DCE ingestion where files are deleted instead of archived
+    # Example: Run DCE ingestion with office selection where files are deleted instead of archived
     success = asyncio.run(main_ingestion_pipeline_with_progress(
         data_type='dce',  # DCE files are not archived by default
-        collection_name='dce_documents',
+        office_name='CSP',  # NEW: Specify office for DCE
+        collection_name=None,  # Let it auto-generate: dce_csp_documents
         recreate_collection=False,
         remove_duplicates=True,
         archive_processed_files=False,  # Explicitly disable archiving = files will be deleted
@@ -664,7 +690,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("POST-INGESTION FILE MANAGEMENT STATUS")
     print("=" * 80)
-    post_debug_status = debug_file_management_status('dce')
+    post_debug_status = debug_file_management_status('dce', 'CSP')
     print(f"Post-ingestion debug results: {post_debug_status}")
     
     # Show the difference

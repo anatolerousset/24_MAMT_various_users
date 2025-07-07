@@ -113,10 +113,21 @@ class Config:
                     print(f"Error creating container {container_name}: {e}")
     
     @classmethod
-    def get_temp_paths(cls, data_type: str, region_name: str = None):
-        """Get temporary local paths for processing"""
-        if data_type == 'region' and region_name:
-            base_dir = cls.TEMP_DIR / f"region_{region_name}"
+    def get_temp_paths(cls, data_type: str, identifier: str = None):
+        """
+        Get temporary local paths for processing - UPDATED to support both regions and offices
+        
+        Args:
+            data_type: Type of data ('dce', 'region', 'technical')
+            identifier: Region name for 'region' data type, office name for 'dce' data type
+        
+        Returns:
+            Dict of temporary paths
+        """
+        if data_type == 'region' and identifier:
+            base_dir = cls.TEMP_DIR / f"region_{identifier}"
+        elif data_type == 'dce' and identifier:
+            base_dir = cls.TEMP_DIR / f"dce_{identifier}"  # NEW: Support for DCE offices
         else:
             base_dir = cls.TEMP_DIR / data_type
             
@@ -150,7 +161,7 @@ class Config:
     @classmethod
     def get_collection_name_for_data_type(cls, data_type: str, region_name: str = None, office_name: str = None) -> str:
         """
-        Get the appropriate collection name for a data type.
+        Get the appropriate collection name for a data type - UPDATED with enhanced office support.
         
         Args:
             data_type: The type of data ('dce', 'region', 'technical')
@@ -175,7 +186,7 @@ class Config:
     def load_available_regions(cls) -> List[str]:
         """Load available regions from environment variables"""
         try:
-            regions_str = os.getenv('AVAILABLE_REGIONS', '["PACA", "LR"]')
+            regions_str = os.getenv('AVAILABLE_REGIONS', '["PACA"]')
             if regions_str:
                 try:
                     regions = json.loads(regions_str)
@@ -187,17 +198,17 @@ class Config:
                     regions = [region.strip().strip('"\'') for region in regions_str.split(',')]
                     return [region for region in regions if region]
            
-            return ["PACA", "LR"]  # Default fallback
+            return ["PACA"]  # Default fallback
            
         except Exception as e:
             print(f"Warning: Error loading regions: {e}. Using default values.")
-            return ["PACA", "LR"]
+            return ["PACA"]
     
     @classmethod
     def load_available_offices(cls) -> List[str]:
         """Load available offices from environment variables"""
         try:
-            offices_str = os.getenv('AVAILABLE_OFFICES', '["CSP", "Aix", "Marseille"]')
+            offices_str = os.getenv('AVAILABLE_OFFICES', '["CSP"]')
             if offices_str:
                 try:
                     offices = json.loads(offices_str)
@@ -209,11 +220,11 @@ class Config:
                     offices = [office.strip().strip('"\'') for office in offices_str.split(',')]
                     return [office for office in offices if office]
            
-            return ["CSP", "Aix", "Marseille"]  # Default fallback
+            return ["CSP"]  # Default fallback
            
         except Exception as e:
             print(f"Warning: Error loading offices: {e}. Using default values.")
-            return ["CSP", "Aix", "Marseille"]
+            return ["CSP"]
     
     # === Validation Methods ===
     @classmethod

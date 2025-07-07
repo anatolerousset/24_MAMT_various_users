@@ -1,5 +1,5 @@
 """
-Document processor with better individual file tracking
+Document processor with better individual file tracking - UPDATED with office support
 """
 
 import logging
@@ -130,14 +130,17 @@ class DocumentProcessor:
                                                    blob_names: List[str], 
                                                    data_type: str,
                                                    region_name: Optional[str] = None,
+                                                   office_name: Optional[str] = None,  # NEW: Added office_name parameter
                                                    input_container: str = None) -> Tuple[List[LCDocument], List[str]]:
         """
         FIXED: Process files from blob storage with detailed progress tracking and individual file success tracking.
+        UPDATED: Now supports office_name for DCE processing
         
         Args:
             blob_names: List of blob names to process
             data_type: Type of data being processed ('dce' or 'region')
             region_name: Name of the region (if processing regional data)
+            office_name: Name of the office (if processing DCE data) - NEW
             input_container: Container containing input files
             
         Returns:
@@ -156,8 +159,13 @@ class DocumentProcessor:
             log_message=f"Processing {len(blob_names)} documents from blob storage for {data_type}..."
         )
         
-        # Get temporary paths for processing
-        temp_paths = Config.get_temp_paths(data_type, region_name)
+        # Get temporary paths for processing - updated to handle office_name
+        if data_type == 'dce' and office_name:
+            temp_paths = Config.get_temp_paths(data_type, office_name)  # Use office_name for DCE
+        elif data_type == 'region' and region_name:
+            temp_paths = Config.get_temp_paths(data_type, region_name)  # Use region_name for regions
+        else:
+            temp_paths = Config.get_temp_paths(data_type)
         
         # Initialize chunker with temporary image directory
         self._init_chunker(temp_paths["images"])
@@ -241,7 +249,7 @@ class DocumentProcessor:
                     # Continue with next file instead of stopping entire process
                     continue
             
-            # Upload all outputs to blob storage
+            # Upload all outputs to blob storage - updated to handle office_name
             self.progress_callback(
                 current_step="Uploading processed outputs",
                 overall_progress=65,
@@ -249,7 +257,9 @@ class DocumentProcessor:
                 log_message="Uploading processed files to blob storage..."
             )
             
-            self._upload_outputs_to_blob(temp_paths, data_type, region_name)
+            # Use office_name for DCE or region_name for regions
+            upload_identifier = office_name if data_type == 'dce' and office_name else region_name
+            self._upload_outputs_to_blob(temp_paths, data_type, upload_identifier)
             
         finally:
             # Clean up temporary files
@@ -535,12 +545,17 @@ class DocumentProcessor:
     def _upload_outputs_to_blob(self, 
                                temp_paths: Dict[str, Path], 
                                data_type: str, 
-                               region_name: Optional[str] = None):
-        """Upload all temporary outputs to blob storage with progress tracking."""
+                               identifier: Optional[str] = None):  # NEW: Changed parameter name to be more generic
+        """
+        Upload all temporary outputs to blob storage with progress tracking.
+        UPDATED: Now supports both region_name and office_name via the identifier parameter
+        """
         
-        # Create prefix for organizing files
-        if data_type == 'region' and region_name:
-            prefix = f"region_{region_name}/"
+        # Create prefix for organizing files - updated to handle both regions and offices
+        if data_type == 'region' and identifier:
+            prefix = f"region_{identifier}/"
+        elif data_type == 'dce' and identifier:
+            prefix = f"dce_{identifier}/"  # NEW: Support for DCE office-specific prefixes
         else:
             prefix = f"{data_type}/"
         
