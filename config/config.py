@@ -28,7 +28,6 @@ class Config:
     # === Collection Names ===
     COLLECTION_NAME = "region_paca_documents"  # Technical/Region collection
     DCE_COLLECTION = "dce_documents"            # DCE collection
-    REGION_COLLECTION_BASE_NAME = "region_"
     
     # === Processing Settings ===
     DEFAULT_MAX_TOKENS = 1024

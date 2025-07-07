@@ -1,4 +1,3 @@
-# Backend Dockerfile - CPU Only version
 FROM python:3.11-slim
 
 # Set environment variables
