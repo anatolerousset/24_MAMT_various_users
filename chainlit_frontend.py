@@ -1,6 +1,3 @@
-"""
-Chainlit frontend that communicates with the backend API
-"""
 import os
 import httpx
 import chainlit as cl
@@ -26,6 +23,8 @@ class SessionManager:
         self.last_search_results = {}
         self.current_query = ""
         self.user_specifications = None
+        self.selected_region = None
+        self.current_collection = Config.COLLECTION_NAME
     
     def add_response(self, content: str, query: str, sources: List[Tuple[str, int]], specifications: str = None):
         """Add response to history"""
@@ -34,9 +33,20 @@ class SessionManager:
             "query": query,
             "sources": sources,
             "timestamp": datetime.now().strftime("%d/%m/%Y à %H:%M"),
-            "specifications": specifications
+            "specifications": specifications,
+            "region": self.selected_region,
+            "collection": self.current_collection
         }
         self.response_history.append(entry)
+    
+    def set_region(self, region: str):
+        """Set the selected region and update collection name"""
+        self.selected_region = region
+        if region:
+            self.current_collection = f"region_{region.lower()}_documents"
+        else:
+            self.current_collection = Config.COLLECTION_NAME
+        _log.info(f"Region set to: {region}, Collection: {self.current_collection}")
     
     def get_history(self):
         """Get response history"""
@@ -45,6 +55,27 @@ class SessionManager:
     def clear_history(self):
         """Clear response history"""
         self.response_history = []
+
+def load_available_regions() -> List[str]:
+    """Load available regions from environment variables"""
+    try:
+        regions_str = os.getenv('AVAILABLE_REGIONS', '["PACA", "LR"]')
+        if regions_str:
+            try:
+                regions = json.loads(regions_str)
+                if isinstance(regions, list):
+                    return [str(region).strip() for region in regions if region]
+            except json.JSONDecodeError:
+                # Fallback: manual parsing for malformed JSON
+                regions_str = regions_str.strip('[]"\'')
+                regions = [region.strip().strip('"\'') for region in regions_str.split(',')]
+                return [region for region in regions if region]
+       
+        return ["PACA", "LR"]  # Default fallback
+       
+    except Exception as e:
+        _log.warning(f"Error loading regions: {e}. Using default values.")
+        return ["PACA", "LR"]
 
 async def update_progress_bar(status_msg, duration_seconds=9):
     """Update progress bar over specified duration"""
@@ -110,9 +141,65 @@ def process_images_for_chainlit(content: str) -> str:
     processed_content = image_pattern.sub(replace_image_url, content)
     return processed_content
 
+async def create_region_selector_element() -> cl.CustomElement:
+    """Create a region selector custom element"""
+    available_regions = load_available_regions()
+    session_manager = cl.user_session.get("session_manager")
+    
+    # Get current region from session or default to first available
+    current_region = session_manager.selected_region if session_manager else None
+    if not current_region and available_regions:
+        current_region = available_regions[0]
+        if session_manager:
+            session_manager.set_region(current_region)
+    
+    region_element = cl.CustomElement(
+        name="RegionSelector",
+        props={
+            "available_regions": available_regions,
+            "selected_region": current_region,
+            "default_collection": Config.COLLECTION_NAME,
+            "collection_name": f"region_{current_region.lower()}_documents" if current_region else Config.COLLECTION_NAME
+        }
+    )
+    
+    # Store the element in session for later updates
+    cl.user_session.set("region_selector", region_element)
+    
+    return region_element
+
+@cl.action_callback("region_selected")
+async def on_region_selected(action: cl.Action):
+    """Handle region selection from the custom element"""
+    try:
+        region = action.payload.get("region")
+        collection_name = action.payload.get("collection_name")
+        
+        if not region:
+            await cl.Message(content="❌ Région non spécifiée").send()
+            return
+        
+        # Update session manager
+        session_manager = cl.user_session.get("session_manager")
+        if session_manager:
+            session_manager.set_region(region)
+        
+        # Send confirmation message
+        await cl.Message(
+            content=f"✅ **Région sélectionnée:** {region}\n\n"
+                   f"**Collection technique active:** `{collection_name}`\n\n"
+                   f"Vous pouvez maintenant effectuer vos recherches dans cette région."
+        ).send()
+        
+        _log.info(f"Region selected: {region}, Collection: {collection_name}")
+        
+    except Exception as e:
+        _log.error(f"Error handling region selection: {e}")
+        await cl.Message(content=f"❌ Erreur lors de la sélection de région: {str(e)}").send()
+
 @cl.on_chat_start
 async def on_chat_start():
-    """Initialize the chat session"""
+    """Initialize the chat session with region selector"""
     # Initialize session manager
     session_manager = SessionManager()
     cl.user_session.set("session_manager", session_manager)
@@ -141,16 +228,7 @@ async def on_chat_start():
                         service_status.append("✓ Modèle de langage")
                     if services.get("blob_storage") == "healthy":
                         service_status.append("✓ Stockage cloud")
-                    """
-                    if services.get("backend_docx_exporter") == "healthy":
-                        service_status.append("✓ Export DOCX")
-                    if services.get("image_manager") == "healthy":
-                        service_status.append("✓ Gestionnaire d'images")
-                    if services.get("image_serving") == "healthy":
-                        service_status.append("✓ Serveur d'images")
-                        image_count = services.get("available_images", 0)
-                        service_status.append(f"✓ {image_count} images disponibles")
-                    """
+                    
                     welcome_msg += "**Services actifs:** " + ", ".join(service_status) + "\n\n"
                     
                     # Display configuration
@@ -169,6 +247,7 @@ async def on_chat_start():
     except Exception as e:
         welcome_msg = f"🔴 **Erreur de connexion**\n\nErreur: {str(e)}"
     
+    # Display collections info
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{BACKEND_URL}/api/collections", timeout=10.0)
@@ -177,21 +256,28 @@ async def on_chat_start():
                 collections = collections_data.get("collections", [])
                 if collections:
                     _log.info(f"\n**Collections vectorielles:** {', '.join(collections)}")
-            else:
-                _log.info(f"\n⚠️ Impossible de récupérer les collections.")
     except Exception as e:
         _log.info(f"\n⚠️ Erreur lors de la récupération des collections: {str(e)}")
 
-    _log.info(f"\n\n**Backend URL:** {BACKEND_URL}")
-
+    # Add backend and streamlit URLs
     current_host = os.getenv("CHAINLIT_HOST", "localhost")
     streamlit_frontend_url = f"http://{current_host}:8501"
-    welcome_msg += f"\n 📁 **Interface d'ingestion Streamlit** {streamlit_frontend_url}"
-
-    welcome_msg += "\n\n**Écrivez le titre du paragraphe à générer pour commencer !**"
-
+    welcome_msg += f"\n📁 **Interface d'ingestion Streamlit** {streamlit_frontend_url}\n\n"
     
+    # Send welcome message
     await cl.Message(content=welcome_msg).send()
+    
+    # Create and send region selector
+    region_selector = await create_region_selector_element()
+    await cl.Message(
+        content="🗺️ **Sélection de région**\n\nVeuillez d'abord sélectionner la région pour configurer la collection technique appropriée:",
+        elements=[region_selector]
+    ).send()
+    
+    # Instructions
+    await cl.Message(
+        content="**Après avoir sélectionné votre région, écrivez le titre du paragraphe à générer pour commencer !**"
+    ).send()
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -200,8 +286,19 @@ async def on_message(message: cl.Message):
     session_manager = cl.user_session.get("session_manager")
     session_manager.current_query = query
     
+    # Check if region is selected
+    if not session_manager.selected_region:
+        await cl.Message(
+            content="⚠️ **Veuillez d'abord sélectionner une région** via le sélecteur ci-dessus avant de faire votre recherche."
+        ).send()
+        return
+    
     # Show initial status message with progress bar
-    status_msg = await cl.Message(content="🔍 **Recherche hybride en cours...** Initialisation\n\n[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%").send()
+    status_msg = await cl.Message(
+        content=f"🔍 **Recherche hybride en cours dans la région {session_manager.selected_region}...**\n\n"
+               f"Collection: `{session_manager.current_collection}`\n\n"
+               f"[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%"
+    ).send()
     
     # Initialize progress_task to None
     progress_task = None
@@ -210,11 +307,13 @@ async def on_message(message: cl.Message):
         # Start progress bar task
         progress_task = asyncio.create_task(update_progress_bar(status_msg, Config.RESEARCH_WAITING_TIME)) 
         
-        # Perform dual search (both collections)
+        # Perform dual search with selected region's collection
         async with httpx.AsyncClient() as client:
             search_payload = {
                 "query": query,
-                "threshold": 0.1,  # Using backend default
+                "technical_collection": session_manager.current_collection,  # Use region-specific collection
+                "dce_collection": Config.DCE_COLLECTION,
+                "threshold": 0.1,
                 "max_results": 15,
                 "use_reranker": True
             }
@@ -224,18 +323,17 @@ async def on_message(message: cl.Message):
                 client.post(
                     f"{BACKEND_URL}/api/dual-search",
                     json=search_payload,
-                    timeout=60.0  # Increased timeout for image processing
+                    timeout=60.0
                 )
             )
             
-            # Wait for search to complete, but don't wait for progress bar
-            # This allows results to be displayed as soon as they're ready
+            # Wait for search to complete
             done, pending = await asyncio.wait(
                 [progress_task, search_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
             
-            # Get the search response (it should be ready now)
+            # Get the search response
             response = await search_task
             
             # Cancel the progress bar if search completed first
@@ -257,14 +355,19 @@ async def on_message(message: cl.Message):
                 }
                 
                 # Update final status
-                status_msg.content = f"✅ **Recherche terminée** - {total_documents} documents trouvés "
+                status_msg.content = (f"✅ **Recherche terminée dans la région {session_manager.selected_region}**\n\n"
+                                    f"Collection: `{session_manager.current_collection}`\n\n"
+                                    f"{total_documents} documents trouvés")
                 await status_msg.update()
                 
                 # Display results
                 await display_search_results(technical_results, dce_results)
                 
                 if total_documents == 0:
-                    await cl.Message(content="❌ **Aucun document trouvé**\n\nVeuillez reformuler votre titre de paragraphe.").send()
+                    await cl.Message(
+                        content=f"❌ **Aucun document trouvé dans la région {session_manager.selected_region}**\n\n"
+                               f"Veuillez reformuler votre titre de paragraphe ou essayer une autre région."
+                    ).send()
                     return
                 
                 # Automatically ask for specifications
