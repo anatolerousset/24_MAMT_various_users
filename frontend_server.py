@@ -50,7 +50,7 @@ def start_chainlit():
         
         chainlit_process = subprocess.Popen([
             "chainlit", "run", "chainlit_frontend.py",
-            "--port", "8002",
+            "--port", "8502",
             "--host", "0.0.0.0"
         ], env=env)
         print("Chainlit started successfully")
@@ -148,7 +148,7 @@ async def root():
                 "description": "Streamlit interface for document ingestion"
             },
             "chat": {
-                "url": "http://localhost:8002", 
+                "url": "http://localhost:8502", 
                 "description": "Chainlit chat interface with full RAG features"
             },
             "health": {
@@ -187,7 +187,7 @@ async def health_check():
     # Check Chainlit
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get("http://localhost:8002", timeout=5.0)
+            response = await client.get("http://localhost:8502", timeout=5.0)
             services_status["chainlit"] = "healthy" if response.status_code == 200 else "unhealthy"
     except:
         services_status["chainlit"] = "unhealthy"
@@ -231,7 +231,7 @@ async def redirect_to_streamlit():
 @app.get("/chat")
 async def redirect_to_chainlit():
     """Redirect to Chainlit chat interface"""
-    return RedirectResponse(url="http://localhost:8002")
+    return RedirectResponse(url="http://localhost:8502")
 
 @app.post("/api/chat/stream")
 async def proxy_streaming_chat(request: Request):
@@ -624,7 +624,7 @@ async def get_frontend_config():
         "frontend_version": "2.0.0",
         "services": {
             "streamlit_port": 8501,
-            "chainlit_port": 8002,
+            "chainlit_port": 8502,
             "frontend_port": 8000
         },
         "features": {
@@ -702,7 +702,7 @@ if __name__ == "__main__":
     print("Services will be available at:")
     print("  - Frontend API: http://localhost:8000")
     print("  - Streamlit (Ingestion): http://localhost:8501")
-    print("  - Chainlit (Chat): http://localhost:8002")
+    print("  - Chainlit (Chat): http://localhost:8502")
     
     uvicorn.run(
         "frontend_server:app",

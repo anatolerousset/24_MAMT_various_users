@@ -247,7 +247,7 @@ def add_navigation_button():
     if current_host == "0.0.0.0":
         current_host = os.getenv("STREAMLIT_HOST", "localhost")
     
-    second_frontend_url = f"http://{current_host}:8002"
+    second_frontend_url = f"http://{current_host}:8502"
     
     st.markdown(f"""
     <div class="nav-button-container">

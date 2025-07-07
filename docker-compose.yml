@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"  # FastAPI server
       - "8501:8501"  # Streamlit
-      - "8002:8002"  # Chainlit
+      - "8502:8502"  # Chainlit
     environment:
       - BACKEND_URL=http://backend:8001
       - IMAGES_URL=http://localhost:8001

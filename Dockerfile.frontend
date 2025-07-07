@@ -33,6 +33,6 @@ COPY public/ ./public/
 RUN mkdir -p public temp
 
 # Expose ports
-EXPOSE 8000 8501 8002
+EXPOSE 8000 8501 8502
 
 CMD ["python", "frontend_server.py"]
