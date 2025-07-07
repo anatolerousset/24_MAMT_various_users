@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from azure.storage.blob import BlobServiceClient
+import json
 
 from dotenv import load_dotenv
 
@@ -147,18 +148,21 @@ class Config:
         return cls.ARCHIVE_RULES.get(data_type.lower(), cls.ARCHIVE_AFTER_PROCESSING)
     
     @classmethod
-    def get_collection_name_for_data_type(cls, data_type: str, region_name: str = None) -> str:
+    def get_collection_name_for_data_type(cls, data_type: str, region_name: str = None, office_name: str = None) -> str:
         """
         Get the appropriate collection name for a data type.
         
         Args:
             data_type: The type of data ('dce', 'region', 'technical')
             region_name: Optional region name for regional data
+            office_name: Optional office name for DCE data
             
         Returns:
             str: Collection name
         """
         if data_type.lower() == 'dce':
+            if office_name:
+                return f"dce_{office_name.lower()}_documents"
             return cls.DCE_COLLECTION
         elif data_type.lower() == 'region' and region_name:
             return f"region_{region_name.lower()}_documents"
@@ -166,6 +170,50 @@ class Config:
             return cls.COLLECTION_NAME
         else:
             return f"{data_type.lower()}_documents"
+    
+    @classmethod
+    def load_available_regions(cls) -> List[str]:
+        """Load available regions from environment variables"""
+        try:
+            regions_str = os.getenv('AVAILABLE_REGIONS', '["PACA", "LR"]')
+            if regions_str:
+                try:
+                    regions = json.loads(regions_str)
+                    if isinstance(regions, list):
+                        return [str(region).strip() for region in regions if region]
+                except json.JSONDecodeError:
+                    # Fallback: manual parsing for malformed JSON
+                    regions_str = regions_str.strip('[]"\'')
+                    regions = [region.strip().strip('"\'') for region in regions_str.split(',')]
+                    return [region for region in regions if region]
+           
+            return ["PACA", "LR"]  # Default fallback
+           
+        except Exception as e:
+            print(f"Warning: Error loading regions: {e}. Using default values.")
+            return ["PACA", "LR"]
+    
+    @classmethod
+    def load_available_offices(cls) -> List[str]:
+        """Load available offices from environment variables"""
+        try:
+            offices_str = os.getenv('AVAILABLE_OFFICES', '["CSP", "Aix", "Marseille"]')
+            if offices_str:
+                try:
+                    offices = json.loads(offices_str)
+                    if isinstance(offices, list):
+                        return [str(office).strip() for office in offices if office]
+                except json.JSONDecodeError:
+                    # Fallback: manual parsing for malformed JSON
+                    offices_str = offices_str.strip('[]"\'')
+                    offices = [office.strip().strip('"\'') for office in offices_str.split(',')]
+                    return [office for office in offices if office]
+           
+            return ["CSP", "Aix", "Marseille"]  # Default fallback
+           
+        except Exception as e:
+            print(f"Warning: Error loading offices: {e}. Using default values.")
+            return ["CSP", "Aix", "Marseille"]
     
     # === Validation Methods ===
     @classmethod
@@ -198,6 +246,8 @@ class Config:
                 "technical": cls.COLLECTION_NAME,
                 "dce": cls.DCE_COLLECTION
             },
+            "available_regions": cls.load_available_regions(),
+            "available_offices": cls.load_available_offices(),
             "archiving": {
                 "default_behavior": cls.ARCHIVE_AFTER_PROCESSING,
                 "add_timestamp": cls.ARCHIVE_ADD_TIMESTAMP,

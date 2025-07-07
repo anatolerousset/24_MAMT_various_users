@@ -24,7 +24,9 @@ class SessionManager:
         self.current_query = ""
         self.user_specifications = None
         self.selected_region = None
-        self.current_collection = Config.COLLECTION_NAME
+        self.selected_office = None
+        self.technical_collection = Config.COLLECTION_NAME
+        self.dce_collection = Config.DCE_COLLECTION
     
     def add_response(self, content: str, query: str, sources: List[Tuple[str, int]], specifications: str = None):
         """Add response to history"""
@@ -35,18 +37,29 @@ class SessionManager:
             "timestamp": datetime.now().strftime("%d/%m/%Y à %H:%M"),
             "specifications": specifications,
             "region": self.selected_region,
-            "collection": self.current_collection
+            "office": self.selected_office,
+            "technical_collection": self.technical_collection,
+            "dce_collection": self.dce_collection
         }
         self.response_history.append(entry)
     
-    def set_region(self, region: str):
-        """Set the selected region and update collection name"""
+    def set_region_and_office(self, region: str, office: str):
+        """Set the selected region and office and update collection names"""
         self.selected_region = region
+        self.selected_office = office
+        
         if region:
-            self.current_collection = f"region_{region.lower()}_documents"
+            self.technical_collection = f"region_{region.lower()}_documents"
         else:
-            self.current_collection = Config.COLLECTION_NAME
-        _log.info(f"Region set to: {region}, Collection: {self.current_collection}")
+            self.technical_collection = Config.COLLECTION_NAME
+            
+        if office:
+            self.dce_collection = f"dce_{office.lower()}_documents"
+        else:
+            self.dce_collection = Config.DCE_COLLECTION
+            
+        _log.info(f"Region set to: {region}, Office set to: {office}")
+        _log.info(f"Technical Collection: {self.technical_collection}, DCE Collection: {self.dce_collection}")
     
     def get_history(self):
         """Get response history"""
@@ -55,27 +68,6 @@ class SessionManager:
     def clear_history(self):
         """Clear response history"""
         self.response_history = []
-
-def load_available_regions() -> List[str]:
-    """Load available regions from environment variables"""
-    try:
-        regions_str = os.getenv('AVAILABLE_REGIONS', '["PACA", "LR"]')
-        if regions_str:
-            try:
-                regions = json.loads(regions_str)
-                if isinstance(regions, list):
-                    return [str(region).strip() for region in regions if region]
-            except json.JSONDecodeError:
-                # Fallback: manual parsing for malformed JSON
-                regions_str = regions_str.strip('[]"\'')
-                regions = [region.strip().strip('"\'') for region in regions_str.split(',')]
-                return [region for region in regions if region]
-       
-        return ["PACA", "LR"]  # Default fallback
-       
-    except Exception as e:
-        _log.warning(f"Error loading regions: {e}. Using default values.")
-        return ["PACA", "LR"]
 
 async def update_progress_bar(status_msg, duration_seconds=9):
     """Update progress bar over specified duration"""
@@ -141,61 +133,76 @@ def process_images_for_chainlit(content: str) -> str:
     processed_content = image_pattern.sub(replace_image_url, content)
     return processed_content
 
-async def create_region_selector_element() -> cl.CustomElement:
-    """Create a region selector custom element"""
-    available_regions = load_available_regions()
+async def create_region_office_selector_element() -> cl.CustomElement:
+    """Create a region and office selector custom element"""
+    available_regions = Config.load_available_regions()
+    available_offices = Config.load_available_offices()
     session_manager = cl.user_session.get("session_manager")
     
-    # Get current region from session or default to first available
+    # Get current selections from session or default to first available
     current_region = session_manager.selected_region if session_manager else None
+    current_office = session_manager.selected_office if session_manager else None
+    
     if not current_region and available_regions:
         current_region = available_regions[0]
-        if session_manager:
-            session_manager.set_region(current_region)
+    if not current_office and available_offices:
+        current_office = available_offices[0]
+        
+    if session_manager and current_region and current_office:
+        session_manager.set_region_and_office(current_region, current_office)
     
-    region_element = cl.CustomElement(
-        name="RegionSelector",
+    region_office_element = cl.CustomElement(
+        name="RegionOfficeSelector",
         props={
             "available_regions": available_regions,
+            "available_offices": available_offices,
             "selected_region": current_region,
-            "default_collection": Config.COLLECTION_NAME,
-            "collection_name": f"region_{current_region.lower()}_documents" if current_region else Config.COLLECTION_NAME
+            "selected_office": current_office,
+            "default_technical_collection": Config.COLLECTION_NAME,
+            "default_dce_collection": Config.DCE_COLLECTION,
+            "technical_collection_name": f"region_{current_region.lower()}_documents" if current_region else Config.COLLECTION_NAME,
+            "dce_collection_name": f"dce_{current_office.lower()}_documents" if current_office else Config.DCE_COLLECTION
         }
     )
     
     # Store the element in session for later updates
-    cl.user_session.set("region_selector", region_element)
+    cl.user_session.set("region_office_selector", region_office_element)
     
-    return region_element
+    return region_office_element
 
-@cl.action_callback("region_selected")
-async def on_region_selected(action: cl.Action):
-    """Handle region selection from the custom element"""
+@cl.action_callback("region_office_selected")
+async def on_region_office_selected(action: cl.Action):
+    """Handle region and office selection from the custom element"""
     try:
         region = action.payload.get("region")
-        collection_name = action.payload.get("collection_name")
+        office = action.payload.get("office")
+        technical_collection_name = action.payload.get("technical_collection_name")
+        dce_collection_name = action.payload.get("dce_collection_name")
         
-        if not region:
-            await cl.Message(content="❌ Région non spécifiée").send()
+        if not region or not office:
+            await cl.Message(content="❌ Région et bureau non spécifiés").send()
             return
         
         # Update session manager
         session_manager = cl.user_session.get("session_manager")
         if session_manager:
-            session_manager.set_region(region)
+            session_manager.set_region_and_office(region, office)
         
         # Send confirmation message
         await cl.Message(
-            content=f"✅ **Région sélectionnée:** {region}\n\n"
-                   f"**Collection technique active:** `{collection_name}`\n\n"
-                   f"Vous pouvez maintenant effectuer vos recherches dans cette région."
+            content=f"✅ **Sélection confirmée:**\n\n"
+                   f"**Région:** {region}\n"
+                   f"**Bureau:** {office}\n\n"
+                   f"**Collection technique active:** `{technical_collection_name}`\n"
+                   f"**Collection DCE active:** `{dce_collection_name}`\n\n"
+                   f"Vous pouvez maintenant effectuer vos recherches avec cette configuration."
         ).send()
         
-        _log.info(f"Region selected: {region}, Collection: {collection_name}")
+        _log.info(f"Region/Office selected: {region}/{office}, Collections: {technical_collection_name}, {dce_collection_name}")
         
     except Exception as e:
-        _log.error(f"Error handling region selection: {e}")
-        await cl.Message(content=f"❌ Erreur lors de la sélection de région: {str(e)}").send()
+        _log.error(f"Error handling region/office selection: {e}")
+        await cl.Message(content=f"❌ Erreur lors de la sélection: {str(e)}").send()
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -268,7 +275,7 @@ async def on_chat_start():
     await cl.Message(content=welcome_msg).send()
     
     # Create and send region selector
-    region_selector = await create_region_selector_element()
+    region_selector = await create_region_office_selector_element()
     await cl.Message(
         content="🗺️ **Sélection de région**\n\nVeuillez d'abord sélectionner la région pour configurer la collection technique appropriée:",
         elements=[region_selector]
@@ -286,17 +293,19 @@ async def on_message(message: cl.Message):
     session_manager = cl.user_session.get("session_manager")
     session_manager.current_query = query
     
-    # Check if region is selected
-    if not session_manager.selected_region:
+    # Check if region and office are selected
+    if not session_manager.selected_region or not session_manager.selected_office:
         await cl.Message(
-            content="⚠️ **Veuillez d'abord sélectionner une région** via le sélecteur ci-dessus avant de faire votre recherche."
+            content="⚠️ **Veuillez d'abord sélectionner une région et un bureau** via le sélecteur ci-dessus avant de faire votre recherche."
         ).send()
         return
     
     # Show initial status message with progress bar
     status_msg = await cl.Message(
-        content=f"🔍 **Recherche hybride en cours dans la région {session_manager.selected_region}...**\n\n"
-               f"Collection: `{session_manager.current_collection}`\n\n"
+        content=f"🔍 **Recherche hybride en cours...**\n\n"
+               f"Région: **{session_manager.selected_region}** | Bureau: **{session_manager.selected_office}**\n\n"
+               f"Collection Technique: `{session_manager.technical_collection}`\n"
+               f"Collection DCE: `{session_manager.dce_collection}`\n\n"
                f"[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%"
     ).send()
     
@@ -307,12 +316,12 @@ async def on_message(message: cl.Message):
         # Start progress bar task
         progress_task = asyncio.create_task(update_progress_bar(status_msg, Config.RESEARCH_WAITING_TIME)) 
         
-        # Perform dual search with selected region's collection
+        # Perform dual search with selected collections
         async with httpx.AsyncClient() as client:
             search_payload = {
                 "query": query,
-                "technical_collection": session_manager.current_collection,  # Use region-specific collection
-                "dce_collection": Config.DCE_COLLECTION,
+                "technical_collection": session_manager.technical_collection,
+                "dce_collection": session_manager.dce_collection,
                 "threshold": 0.1,
                 "max_results": 15,
                 "use_reranker": True
@@ -355,8 +364,10 @@ async def on_message(message: cl.Message):
                 }
                 
                 # Update final status
-                status_msg.content = (f"✅ **Recherche terminée dans la région {session_manager.selected_region}**\n\n"
-                                    f"Collection: `{session_manager.current_collection}`\n\n"
+                status_msg.content = (f"✅ **Recherche terminée**\n\n"
+                                    f"Région: **{session_manager.selected_region}** | Bureau: **{session_manager.selected_office}**\n\n"
+                                    f"Collection Technique: `{session_manager.technical_collection}`\n"
+                                    f"Collection DCE: `{session_manager.dce_collection}`\n\n"
                                     f"{total_documents} documents trouvés")
                 await status_msg.update()
                 
@@ -365,8 +376,9 @@ async def on_message(message: cl.Message):
                 
                 if total_documents == 0:
                     await cl.Message(
-                        content=f"❌ **Aucun document trouvé dans la région {session_manager.selected_region}**\n\n"
-                               f"Veuillez reformuler votre titre de paragraphe ou essayer une autre région."
+                        content=f"❌ **Aucun document trouvé**\n\n"
+                               f"Région: {session_manager.selected_region} | Bureau: {session_manager.selected_office}\n\n"
+                               f"Veuillez reformuler votre titre de paragraphe ou essayer une autre configuration."
                     ).send()
                     return
                 
