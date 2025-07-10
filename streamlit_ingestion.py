@@ -30,7 +30,7 @@ async def start_basic_ingestion(ingestion_params: dict):
             response = await client.post(
                 f"{BACKEND_URL}/api/ingestion",
                 json=ingestion_params,
-                timeout=300.0
+                timeout=600.0 #10minutes
             )
             
             if response.status_code == 200:

@@ -188,6 +188,7 @@ async def on_region_office_selected(action: cl.Action):
         if session_manager:
             session_manager.set_region_and_office(region, office)
         
+        """
         # Send confirmation message
         await cl.Message(
             content=f"✅ **Sélection confirmée:**\n\n"
@@ -197,7 +198,7 @@ async def on_region_office_selected(action: cl.Action):
                    f"**Collection DCE active:** `{dce_collection_name}`\n\n"
                    f"Vous pouvez maintenant effectuer vos recherches avec cette configuration."
         ).send()
-        
+        """
         _log.info(f"Region/Office selected: {region}/{office}, Collections: {technical_collection_name}, {dce_collection_name}")
         
     except Exception as e:
